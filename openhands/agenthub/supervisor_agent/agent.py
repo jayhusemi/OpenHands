@@ -40,81 +40,90 @@ class SupervisorAgent(Agent):
         # Set up logger
         self.logger = logging.getLogger(__name__)
         logging.basicConfig(level=logging.DEBUG)  # Set the logging level
+        self.llm_config = llm.config
 
     def step(self, state: State) -> Action:
-        """Checks to see if current step is completed, returns AgentFinishAction if True.
-        Otherwise, delegates the task to the next agent in the pipeline.
-
-        Parameters:
-        - state (State): The current state given the previous actions and observations
-
-        Returns:
-        - AgentFinishAction: If the last state was 'completed', 'verified', or 'abandoned'
-        - AgentDelegateAction: The next agent to delegate the task to
-        """
         self.logger.debug('Starting step with state: %s', state)
-        # Example logic for breaking down tasks and delegating
+        self.logger.debug('LLM config: %s', self.llm_config)
+
         if not self.sub_goals:
-            self.logger.debug('No sub-goals found, breaking down task.')
-            task, _ = state.get_current_user_intent()
-            self.sub_goals = self.break_down_task(task)
-            self.logger.debug('Sub-goals: %s', self.sub_goals)
-            # If the LLM returns an empty list, reject the action
-            if self.sub_goals is None or self.sub_goals == []:
-                return AgentRejectAction()
+            self.initialize_sub_goals(state)
 
         if self.current_delegate == '':
-            self.logger.debug("Current delegate is empty, assigning 'manager'.")
-            # First subgoal as the current delegate is empty
-            self.current_delegate = 'manager'
-            return AgentDelegateAction(
-                agent='ManagerAgent',
-                inputs={'task': json.dumps(self.sub_goals[self.current_goal_index])},
+            self.current_delegate = 'CodeActAgent'
+            return self.delegate_to_agent(
+                'CodeActAgent', self.construct_task_details(self.prepare_current_task())
             )
-        elif self.current_delegate == 'manager':
-            self.logger.debug("Current delegate is 'manager'.")
-            last_observation = state.history.get_last_observation()
 
-            if not isinstance(last_observation, AgentDelegateObservation):
-                raise Exception('Last observation is not an AgentDelegateObservation')
-
-            if last_observation.outputs.get('action', '') == 'reject':
-                self.logger.debug('No summary found, creating adjustment prompt.')
-                reason = getattr(last_observation, 'reason', '')
-                # Ensure reason is a string
-                prompt = self.create_adjustment_prompt(reason)
-                # Get the sub-goals from the language model using the generated prompt
-                self.sub_goals = self.get_sub_goals_from_llm(prompt)
-                # Add the summary to the current sub-goal
-                current_task = copy.deepcopy(self.sub_goals[self.current_goal_index])
-                current_task['summary'] = (
-                    f'Summary from previous milestones: {self.summary}'
-                )
-                return AgentDelegateAction(
-                    agent='ManagerAgent', inputs={'task': json.dumps(current_task)}
-                )
-            else:
-                # Append the current milestone and summary to the agent's summary
-                summary = last_observation.outputs.get('summary', '')
-                self.append_to_summary(
-                    self.sub_goals[self.current_goal_index]['task'], summary
-                )
-                self.current_goal_index += 1
-
-                if self.current_goal_index < len(self.sub_goals):
-                    # Add the summary to the current sub-goal
-                    current_task = copy.deepcopy(
-                        self.sub_goals[self.current_goal_index]
-                    )
-                    current_task['summary'] = (
-                        f'Summary from previous milestones: {self.summary}'
-                    )
-
-                    return AgentDelegateAction(
-                        agent='ManagerAgent', inputs={'task': json.dumps(current_task)}
-                    )
+        elif self.current_delegate == 'CodeActAgent':
+            return self.handle_code_act_agent(state)
 
         return AgentFinishAction()
+
+    def initialize_sub_goals(self, state: State):
+        self.logger.debug('No sub-goals found, breaking down task.')
+        self.task, _ = state.get_current_user_intent()
+        self.sub_goals = self.break_down_task(self.task)
+        self.logger.debug('Sub-goals: %s', self.sub_goals)
+        if not self.sub_goals:
+            return AgentRejectAction()
+
+    def delegate_to_agent(self, agent_name: str, task: str) -> AgentDelegateAction:
+        self.logger.debug(f'Delegating to agent: {agent_name}')
+
+        return AgentDelegateAction(agent=agent_name, inputs={'task': task})
+
+    def handle_code_act_agent(self, state: State) -> Action:
+        self.logger.debug("Current delegate is 'CodeActAgent'.")
+        last_observation = state.history.get_last_observation()
+
+        if not isinstance(last_observation, AgentDelegateObservation):
+            raise Exception('Last observation is not an AgentDelegateObservation')
+
+        if last_observation.outputs.get('action', '') == 'reject':
+            return self.handle_rejection(last_observation)
+
+        return self.handle_success(last_observation)
+
+    def handle_rejection(
+        self, last_observation: AgentDelegateObservation
+    ) -> AgentDelegateAction:
+        self.logger.debug('No summary found, creating adjustment prompt.')
+        reason = getattr(last_observation, 'reason', '')
+        prompt = self.create_adjustment_prompt(reason)
+        self.sub_goals = self.get_sub_goals_from_llm(prompt)
+        current_task = self.prepare_current_task()
+        return self.delegate_to_agent(
+            'CodeActAgent', self.construct_task_details(current_task)
+        )
+
+    def handle_success(self, last_observation: AgentDelegateObservation) -> Action:
+        summary = last_observation.outputs.get('summary', '')
+        self.append_to_summary(summary)
+        self.current_goal_index += 1
+
+        if self.current_goal_index < len(self.sub_goals):
+            current_task = self.prepare_current_task()
+            task_details = self.construct_task_details(current_task)
+            return self.delegate_to_agent('CodeActAgent', task_details)
+
+        return AgentFinishAction()
+
+    def prepare_current_task(self) -> Dict[str, str]:
+        current_task = copy.deepcopy(self.sub_goals[self.current_goal_index])
+        current_task['summary'] = self.summary if self.summary else ''
+        return current_task
+
+    def construct_task_details(self, current_task: Dict[str, str]) -> str:
+        task_details = (
+            f"Task: {self.task}\n\n"
+            f"Next Subtask: {current_task['task']}\n"
+            f"Suggested Approach: {current_task['suggested_approach']}\n"
+            f"Important Details: {current_task['important_details']}"
+        )
+        if self.summary:
+            task_details = f'Progress so far: {self.summary}\n\n' + task_details
+        return task_details
 
     def break_down_task(self, task: str) -> List[Dict[str, str]]:
         # Generate the initial prompt for breaking down the task
@@ -151,6 +160,6 @@ class SupervisorAgent(Agent):
         )
         return json.loads(response['choices'][0]['message']['content'])
 
-    def append_to_summary(self, milestone_name: str, summary: str):
+    def append_to_summary(self, summary: str):
         """Appends the milestone name and summary to the agent's summary state."""
-        self.summary += f'Milestone: {milestone_name}\nSummary: {summary}\n\n'
+        self.summary += f'{summary}\n\n'

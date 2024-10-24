@@ -6,8 +6,9 @@ HISTORY_SIZE = 20
 
 # General Description
 general_description = """
-You are a strategic manager AI in a software development team. You MUST think CAREFULLY how to complete the task assigned to you.
-You MUST think on a HIGHER LEVEL view always.
+You are a strategic planner AI in a software development team. You have a team of agents
+who will complete the tasks you give them. Each agent is an expert in a specific area.
+You MUST think CAREFULLY how to complete the task assigned to you.
 
 You've been given the following task:
 %(task)s
@@ -44,15 +45,10 @@ You MUST ONLY generate a list of JSONs:
       "suggested_approach": "<suggested approach>",
       "important_details": "<important details>"
     },
-    {
-      "task": "<Task 3 name>",
-      "suggested_approach": "<suggested approach>",
-      "important_details": "<important details>"
-    },
 ]
 
 The tasks MUST be generated in order, they MUST NOT depend on future tasks or previous tasks. They MUST be independent.
-You MUST generate at least 1 task.
+You MUST generate at least 1 task. The last task MUST be the implementation task. You WILL NOT need a test file.
 
 For example:
 User prompt:
@@ -74,34 +70,19 @@ Your response:
         "important_details": "Focus on the 'fix' command and any related verbosity settings. Document any findings that could be useful for implementing a quiet mode."
     },
     {
-        "task": "Design a quiet mode feature for SQLFluff CLI",
-        "suggested_approach": "Based on the research findings, design a new feature that allows users to enable a quiet mode. This mode should minimize output to only essential information such as return status and number of fixes applied.",
-        "important_details": "Ensure the design is compatible with existing CLI options and does not interfere with other functionalities."
-    },
-    {
         "task": "Implement the quiet mode feature",
         "suggested_approach": "Modify the SQLFluff CLI codebase to add the new quiet mode feature. Implement the necessary changes in the code to support this feature and ensure it can be activated via a command-line flag.",
         "important_details": "Write unit tests to verify that the quiet mode works as expected and does not affect other CLI functionalities."
-    },
-    {
-        "task": "Test the quiet mode feature",
-        "suggested_approach": "Conduct thorough testing of the new quiet mode feature in various scenarios, including its use in a pre-commit hook. Ensure that it behaves as expected and provides the desired level of output reduction.",
-        "important_details": "Test with different verbosity levels to ensure compatibility and check for any edge cases that might cause unexpected behavior."
-    },
-    {
-        "task": "Document the new feature",
-        "suggested_approach": "Update the SQLFluff CLI documentation to include information about the new quiet mode feature. Provide examples of how to use it and explain its benefits.",
-        "important_details": "Ensure the documentation is clear and easy to understand for users who may not be familiar with the technical details."
     }
 ]
 """
 
 adjustment_prompt = """
 
-    This is the current active plan that your subordinates are working on:
+    This is the current active plan that your agents are working on:
     %(milestones)s
 
-    And this is the current subtask that your subordinates are working on:
+    And this is the current subtask that your agents are working on:
     ## Current subtask
     subtask: %(milestone_task)s
     Suggested Approach: %(milestone_suggested_approach)s
@@ -130,18 +111,14 @@ adjustment_prompt = """
 
 
 def get_initial_prompt(task: str) -> str:
-    """Gets the prompt for the planner agent.
-
-    Formatted with the most recent action-observation pairs, current task, and hint based on last action
-
-    Parameters:
-    - state (State): The state of the current agent
-
-    Returns: with historical values
-    """
-    return (general_description + initial_prompt) % {
+    formatted_prompt = (general_description + initial_prompt) % {
         'task': task,
     }
+
+    # Add instruction to not include json formatting
+    formatted_prompt += '\n\nIMPORTANT: Do not include ```json at the start or ``` at the end of your response. Just return the raw JSON list.'
+
+    return formatted_prompt
 
 
 def adjust_milestones(
@@ -167,8 +144,8 @@ def adjust_milestones(
     milestone_suggested_approach = subtask['suggested_approach']
     milestone_important_details = subtask['important_details']
 
-    # Use the extracted values in the string formatting
-    return (general_description + adjustment_prompt) % {
+    # Get the formatted prompt
+    formatted_prompt = (general_description + adjustment_prompt) % {
         'milestones': json.dumps(milestones),
         'reason': reason,
         'summary': summary,
@@ -177,3 +154,8 @@ def adjust_milestones(
         'milestone_suggested_approach': milestone_suggested_approach,
         'milestone_important_details': milestone_important_details,
     }
+
+    # Add instruction to not include json formatting
+    formatted_prompt += '\n\nIMPORTANT: Do not include ```json at the start or ``` at the end of your response. Just return the raw JSON list.'
+
+    return formatted_prompt
