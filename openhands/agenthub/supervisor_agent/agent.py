@@ -1,15 +1,15 @@
-import copy
 import logging
-from typing import Dict, List
+from typing import Any, Dict, List, Literal, Union
 
 from openhands.agenthub.supervisor_agent.prompt import (
-    adjust_milestones,
-    get_initial_prompt,
+    TASK_TYPE_ISSUE,
+    get_prompt,
 )
 from openhands.controller.agent import Agent
 from openhands.controller.state.state import State
 from openhands.core.config import AgentConfig
 from openhands.core.message import Message, TextContent
+from openhands.core.schema.action import ActionType
 from openhands.core.utils import json
 from openhands.events.action import Action, AgentDelegateAction, AgentFinishAction
 from openhands.events.action.agent import AgentRejectAction
@@ -25,10 +25,13 @@ class SupervisorAgent(Agent):
     """
 
     current_delegate: str = ''
-    sub_goals: List[Dict[str, str]] = []
-    current_goal_index: int = 0
-    summary: str = ''
+    suggested_approaches: List[Dict[str, List[str]]] = []
+    suggested_approach_index: int = -1  # -1 Because we increment it before using it
+    results: Dict[str, List[Any]] = {'search': [], 'code': []}
+    condensed_information: str = ''
+    does_it_needs_a_test: str = ''
     task: str = ''
+    phase: Literal['search', 'summary', 'code'] = 'search'
 
     def __init__(self, llm: LLM, config: AgentConfig):
         """Initialize the Supervisor Agent with an LLM
@@ -46,120 +49,91 @@ class SupervisorAgent(Agent):
         self.logger.debug('Starting step with state: %s', state)
         self.logger.debug('LLM config: %s', self.llm_config)
 
-        if not self.sub_goals:
-            self.initialize_sub_goals(state)
+        if not self.suggested_approaches:
+            self.suggested_approaches = self.get_suggested_approaches(state)
+        self.suggested_approach_index += 1
 
-        if self.current_delegate == '':
-            self.current_delegate = 'CodeActAgent'
+        last_observation = state.history.get_last_observation()
+        if (
+            isinstance(last_observation, AgentDelegateObservation)
+            and last_observation.outputs.get('action', '') == ActionType.FINISH
+        ):
+            self.results[self.phase].append(last_observation.outputs.get('output', ''))
+
+        if len(self.results[self.phase]) < len(self.suggested_approaches):
+            # Delegate to the SearcherAgent as we need to gather more information
             return self.delegate_to_agent(
-                'CodeActAgent', self.construct_task_details(self.prepare_current_task())
+                'SearcherAgent',
+                self.task,
+                self.suggested_approaches[self.suggested_approach_index].get(
+                    'suggested_approach', []
+                ),
             )
 
-        elif self.current_delegate == 'CodeActAgent':
-            return self.handle_code_act_agent(state)
+        if self.phase == 'search':
+            # We don't change the phase until we have the condensed information
+            condensed_information = self.ask_llm(
+                self.task, '2', json.dumps(self.results['search'])
+            )[0]
+            if condensed_information.get('summary', '') != '':
+                self.phase = 'summary'
+                self.condensed_information = condensed_information.get('summary', '')
+            else:
+                suggested_approach: str | list[str] = condensed_information.get(
+                    'suggested_approach', []
+                )
+                self.results['search'].append(suggested_approach)
+                return self.delegate_to_agent(
+                    'SearcherAgent', self.task, suggested_approach
+                )
+
+        if self.phase == 'summary':
+            # Now we have to judge if this issue requires a test or not before fixing it
+            does_it_needs_a_test = self.ask_llm(
+                self.task, 'code', self.condensed_information
+            )[0]
+            if does_it_needs_a_test.get('suggested_approach', '') == TASK_TYPE_ISSUE:
+                self.phase = 'code'
+            else:
+                self.phase = 'code'
+
+        # WIP: Implement the code phase
 
         return AgentFinishAction()
 
-    def initialize_sub_goals(self, state: State):
-        self.logger.debug('No sub-goals found, breaking down task.')
+    def get_suggested_approaches(self, state: State):
+        self.logger.debug('No suggested approaches found, breaking down task.')
         self.task, _ = state.get_current_user_intent()
-        self.sub_goals = self.break_down_task(self.task)
-        self.logger.debug('Sub-goals: %s', self.sub_goals)
-        if not self.sub_goals:
+        suggested_approaches = self.ask_llm(self.task, 'search')
+        self.logger.debug('Suggested approaches: %s', self.suggested_approaches)
+        if not suggested_approaches:
             return AgentRejectAction()
+        return suggested_approaches
 
-    def delegate_to_agent(self, agent_name: str, task: str) -> AgentDelegateAction:
-        self.logger.debug(f'Delegating to agent: {agent_name}')
-
-        return AgentDelegateAction(agent=agent_name, inputs={'task': task})
-
-    def handle_code_act_agent(self, state: State) -> Action:
-        self.logger.debug("Current delegate is 'CodeActAgent'.")
-        last_observation = state.history.get_last_observation()
-
-        if not isinstance(last_observation, AgentDelegateObservation):
-            raise Exception('Last observation is not an AgentDelegateObservation')
-
-        if last_observation.outputs.get('action', '') == 'reject':
-            return self.handle_rejection(last_observation)
-
-        return self.handle_success(last_observation)
-
-    def handle_rejection(
-        self, last_observation: AgentDelegateObservation
+    def delegate_to_agent(
+        self, agent_name: str, task: str, suggested_approach: Union[str, List[str]]
     ) -> AgentDelegateAction:
-        self.logger.debug('No summary found, creating adjustment prompt.')
-        reason = getattr(last_observation, 'reason', '')
-        prompt = self.create_adjustment_prompt(reason)
-        self.sub_goals = self.get_sub_goals_from_llm(prompt)
-        current_task = self.prepare_current_task()
-        return self.delegate_to_agent(
-            'CodeActAgent', self.construct_task_details(current_task)
+        self.logger.debug(f'Delegating to agent: {agent_name}')
+        # Join the list of strings with newlines if it's a list
+        approach = (
+            '\n'.join(suggested_approach)
+            if isinstance(suggested_approach, list)
+            else suggested_approach
+        )
+        return AgentDelegateAction(
+            agent=agent_name, inputs={'task': task, 'suggested_approach': approach}
         )
 
-    def handle_success(self, last_observation: AgentDelegateObservation) -> Action:
-        summary = last_observation.outputs.get('summary', '')
-        self.append_to_summary(summary)
-        self.current_goal_index += 1
+    def ask_llm(
+        self, task: str, phase: str, search_results: str = ''
+    ) -> List[Dict[str, str]]:
+        prompt = get_prompt(task, phase, search_results)
+        return self.get_response(prompt)
 
-        if self.current_goal_index < len(self.sub_goals):
-            current_task = self.prepare_current_task()
-            task_details = self.construct_task_details(current_task)
-            return self.delegate_to_agent('CodeActAgent', task_details)
-
-        return AgentFinishAction()
-
-    def prepare_current_task(self) -> Dict[str, str]:
-        current_task = copy.deepcopy(self.sub_goals[self.current_goal_index])
-        current_task['summary'] = self.summary if self.summary else ''
-        return current_task
-
-    def construct_task_details(self, current_task: Dict[str, str]) -> str:
-        task_details = (
-            f"Task: {self.task}\n\n"
-            f"Next Subtask: {current_task['task']}\n"
-            f"Suggested Approach: {current_task['suggested_approach']}\n"
-            f"Important Details: {current_task['important_details']}"
-        )
-        if self.summary:
-            task_details = f'Progress so far: {self.summary}\n\n' + task_details
-        return task_details
-
-    def break_down_task(self, task: str) -> List[Dict[str, str]]:
-        # Generate the initial prompt for breaking down the task
-        prompt = get_initial_prompt(task)
-        # Get the sub-goals from the language model using the generated prompt
-        return self.get_sub_goals_from_llm(prompt)
-
-    def should_interrupt(self, observation) -> bool:
-        # Logic to determine if the task should be interrupted
-        return False  # Placeholder
-
-    def summarize_history(self, history) -> str:
-        # Logic to summarize the history
-        return 'summary'  # Placeholder
-
-    def provide_guidance(self, state: State) -> Action:
-        # Logic to provide high-level guidance
-        return AgentFinishAction()  # Placeholder
-
-    def create_adjustment_prompt(self, reason: str) -> str:
-        return adjust_milestones(
-            self.sub_goals,
-            self.sub_goals[self.current_goal_index],
-            reason,
-            self.summary,
-            self.task,
-        )
-
-    def get_sub_goals_from_llm(self, prompt: str) -> List[Dict[str, str]]:
+    def get_response(self, prompt: str) -> List[Dict[str, str]]:
         content = [TextContent(text=prompt)]
         message = Message(role='user', content=content)
         response = self.llm.completion(
             messages=self.llm.format_messages_for_llm(message)
         )
         return json.loads(response['choices'][0]['message']['content'])
-
-    def append_to_summary(self, summary: str):
-        """Appends the milestone name and summary to the agent's summary state."""
-        self.summary += f'{summary}\n\n'
