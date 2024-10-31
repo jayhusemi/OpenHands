@@ -10,6 +10,7 @@ from openhands.agenthub.codeact_agent.action_parser import CodeActResponseParser
 from openhands.controller.agent import Agent
 from openhands.controller.state.state import State
 from openhands.core.config import AgentConfig
+from openhands.core.config.llm_config import LLMConfig
 from openhands.core.logger import openhands_logger as logger
 from openhands.core.message import ImageContent, Message, TextContent
 from openhands.events.action import (
@@ -81,6 +82,16 @@ class CodeActAgent(Agent):
         Parameters:
         - llm (LLM): The llm to be used by this agent
         """
+
+        llm_config = LLMConfig(
+            model='litellm_proxy/claude-3-5-sonnet-20241022',
+            api_key='REDACTED',
+            temperature=0.0,
+            base_url='https://llm-proxy.app.all-hands.dev',
+        )
+        llm = LLM(llm_config)
+        # TODO: Remove this once we have a real AgentConfig
+        config = AgentConfig(llm_config='o1-mini')
         super().__init__(llm, config)
         self.reset()
 

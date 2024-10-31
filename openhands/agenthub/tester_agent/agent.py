@@ -1,45 +1,35 @@
 import logging
 
-from openhands.agenthub.searcher_agent.action_parser import SearcherAgentResponseParser
-from openhands.agenthub.searcher_agent.prompt import get_prompt
+from openhands.agenthub.tester_agent.action_parser import TesterAgentResponseParser
+from openhands.agenthub.tester_agent.prompt import get_prompt
 from openhands.controller.agent import Agent
 from openhands.controller.state.state import State
 from openhands.core.config import AgentConfig
 from openhands.core.config.llm_config import LLMConfig
 from openhands.core.message import Message, TextContent
-from openhands.events.action import Action, AgentFinishAction, IPythonRunCellAction
-from openhands.events.action.commands import CmdRunAction
+from openhands.events.action import Action, AgentFinishAction
+from openhands.events.action.commands import CmdRunAction, IPythonRunCellAction
 from openhands.events.action.message import MessageAction
-from openhands.events.observation import IPythonRunCellObservation
-from openhands.events.observation.commands import CmdOutputObservation
+from openhands.events.observation.commands import (
+    CmdOutputObservation,
+    IPythonRunCellObservation,
+)
 from openhands.events.observation.error import ErrorObservation
 from openhands.events.observation.observation import Observation
 from openhands.events.observation.reject import UserRejectObservation
 from openhands.llm.llm import LLM
-from openhands.runtime.plugins.agent_skills import AgentSkillsRequirement
-from openhands.runtime.plugins.jupyter import JupyterRequirement
-from openhands.runtime.plugins.requirement import PluginRequirement
 
 
-# WIP: Make this agent be able to detect when to stop and automatically stop (or make the supervisor able to stop the agent).
-class SearcherAgent(Agent):
+class TesterAgent(Agent):
     VERSION = '1.0'
     """
-    The Searcher Agent is an agent that searches the codebase for relevant information.
+    The Tester Agent is an agent that tries to replicate the issue.
     """
 
-    sandbox_plugins: list[PluginRequirement] = [
-        # NOTE: AgentSkillsRequirement need to go before JupyterRequirement, since
-        # AgentSkillsRequirement provides a lot of Python functions,
-        # and it needs to be initialized before Jupyter for Jupyter to use those functions.
-        AgentSkillsRequirement(),
-        JupyterRequirement(),
-    ]
-
-    action_parser = SearcherAgentResponseParser()
+    action_parser = TesterAgentResponseParser()
 
     def __init__(self, llm: LLM, config: AgentConfig):
-        """Initialize the Searcher Agent with an LLM
+        """Initialize the Tester Agent with an LLM
 
         Parameters:
         - llm (LLM): The llm to be used by this agent
@@ -111,13 +101,6 @@ class SearcherAgent(Agent):
             return Message(role='user', content=[TextContent(text=text)])
         elif isinstance(obs, IPythonRunCellObservation):
             text = obs_prefix + obs.content
-            splitted = text.split('\n')
-            for i, line in enumerate(splitted):
-                if '![image](data:image/png;base64,' in line:
-                    splitted[i] = (
-                        '![image](data:image/png;base64, ...) already displayed to user'
-                    )
-            text = '\n'.join(splitted)
             return Message(role='user', content=[TextContent(text=text)])
         elif isinstance(obs, ErrorObservation):
             text = obs_prefix + obs.content
@@ -131,7 +114,7 @@ class SearcherAgent(Agent):
             raise ValueError(f'Unknown observation type: {type(obs)}')
 
     def step(self, state: State) -> Action:
-        """Performs one step using the SearcherAgent.
+        """Performs one step using the Tester Agent.
         This includes gathering info on previous steps and prompting the model to make a command to execute.
 
         Parameters:
@@ -143,14 +126,18 @@ class SearcherAgent(Agent):
         - MessageAction(content) - Message action to run (e.g. ask for clarification)
         - AgentFinishAction() - end the interaction
         """
+        # if we're done, go back
+        latest_user_message = state.history.get_last_user_message()
+        if latest_user_message and latest_user_message.strip() == '/exit':
+            return AgentFinishAction()
 
         # prepare what we want to send to the LLM
         messages = self._get_messages(state)
         params = {
             'messages': self.llm.format_messages_for_llm(messages),
             'stop': [
-                '</execute_bash>',
                 '</execute_ipython>',
+                '</execute_bash>',
             ],
         }
 
@@ -159,24 +146,23 @@ class SearcherAgent(Agent):
         return self.action_parser.parse(response)
 
     def _get_messages(self, state: State) -> list[Message]:
-        # Get task and suggested approach from state inputs
         task = state.inputs.get('task', '')
-        suggested_approach = state.inputs.get('suggested_approach', '')
+        summary = state.inputs.get('summary', '')
 
         messages: list[Message] = [
             Message(
                 role='system',
                 content=[
                     TextContent(
-                        text=get_prompt(task, suggested_approach),
-                        cache_prompt=self.llm.is_caching_prompt_active(),
+                        text=get_prompt(task, summary),
+                        cache_prompt=self.llm.is_caching_prompt_active(),  # Cache system prompt
                     )
                 ],
             ),
         ]
 
         for event in state.history.get_events():
-            # create message from event
+            # create a regular message from an event
             if isinstance(event, Action):
                 message = self.get_action_message(event)
             elif isinstance(event, Observation):
@@ -197,7 +183,19 @@ class SearcherAgent(Agent):
             user_turns_processed = 0
             for message in reversed(messages):
                 if message.role == 'user' and user_turns_processed < 2:
-                    message.content[-1].cache_prompt = True
+                    message.content[
+                        -1
+                    ].cache_prompt = True  # Last item inside the message content
                     user_turns_processed += 1
+
+        # Add environment reminder to the latest user message
+        latest_user_message = next(
+            (m for m in reversed(messages) if m.role == 'user'),
+            None,
+        )
+
+        if latest_user_message:
+            reminder_text = f'\n\nENVIRONMENT REMINDER: You have {state.max_iterations - state.iteration} turns left to complete the task. When finished reply with <finish></finish>.'
+            latest_user_message.content.append(TextContent(text=reminder_text))
 
         return messages

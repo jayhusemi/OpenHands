@@ -16,6 +16,7 @@ from openhands.agenthub import (  # noqa: E402
     planner_agent,
     searcher_agent,
     supervisor_agent,
+    tester_agent,
 )
 
 __all__ = [
@@ -27,6 +28,7 @@ __all__ = [
     'browsing_agent',
     'searcher_agent',
     'supervisor_agent',
+    'tester_agent',
 ]
 
 for agent in all_microagents.values():

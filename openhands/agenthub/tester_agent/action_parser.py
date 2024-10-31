@@ -13,7 +13,7 @@ from openhands.events.action import (
 )
 
 
-class SearcherAgentResponseParser(ResponseParser):
+class TesterAgentResponseParser(ResponseParser):
     """Parser action:
     - CmdRunAction(command) - bash command to run
     - IPythonRunCellAction(code) - IPython code to run
@@ -25,11 +25,11 @@ class SearcherAgentResponseParser(ResponseParser):
         # Need pay attention to the item order in self.action_parsers
         super().__init__()
         self.action_parsers = [
-            SearcherAgentActionParserFinish(),
-            SearcherAgentActionParserCmdRun(),
-            SearcherAgentActionParserIPythonRunCell(),
+            TesterAgentActionParserFinish(),
+            TesterAgentActionParserCmdRun(),
+            TesterAgentActionParserIPythonRunCell(),
         ]
-        self.default_parser = SearcherAgentActionParserMessage()
+        self.default_parser = TesterAgentActionParserMessage()
 
     def parse(self, response) -> Action:
         action_str = self.parse_response(response)
@@ -39,12 +39,15 @@ class SearcherAgentResponseParser(ResponseParser):
         action = response.choices[0].message.content
         if action is None:
             return ''
-        for lang in ['bash', 'ipython']:
+        for lang in ['bash', 'ipython', 'browse']:
+            # special handling for DeepSeek: it has stop-word bug and returns </execute_ipython instead of </execute_ipython>
             if f'</execute_{lang}' in action and f'</execute_{lang}>' not in action:
                 action = action.replace(f'</execute_{lang}', f'</execute_{lang}>')
 
             if f'<execute_{lang}>' in action and f'</execute_{lang}>' not in action:
                 action += f'</execute_{lang}>'
+        if '<file_edit' in action and '</file_edit>' not in action:
+            action += '</file_edit>'
         return action
 
     def parse_action(self, action_str: str) -> Action:
@@ -54,7 +57,7 @@ class SearcherAgentResponseParser(ResponseParser):
         return self.default_parser.parse(action_str)
 
 
-class SearcherAgentActionParserFinish(ActionParser):
+class TesterAgentActionParserFinish(ActionParser):
     """Parser action:
     - AgentFinishAction() - end the interaction
     """
@@ -65,9 +68,7 @@ class SearcherAgentActionParserFinish(ActionParser):
         self.finish_command = None
 
     def check_condition(self, action_str: str) -> bool:
-        self.finish_command = re.search(
-            r'<finish>(.*?)</finish>', action_str, re.DOTALL
-        )
+        self.finish_command = re.search(r'<finish>.*</finish>', action_str, re.DOTALL)
         return self.finish_command is not None
 
     def parse(self, action_str: str) -> Action:
@@ -79,7 +80,7 @@ class SearcherAgentActionParserFinish(ActionParser):
         return AgentFinishAction(outputs=outputs)
 
 
-class SearcherAgentActionParserCmdRun(ActionParser):
+class TesterAgentActionParserCmdRun(ActionParser):
     """Parser action:
     - CmdRunAction(command) - bash command to run
     - AgentFinishAction() - end the interaction
@@ -108,12 +109,14 @@ class SearcherAgentActionParserCmdRun(ActionParser):
         return CmdRunAction(command=command_group, thought=thought)
 
 
-class SearcherAgentActionParserIPythonRunCell(ActionParser):
+class TesterAgentActionParserIPythonRunCell(ActionParser):
     """Parser action:
     - IPythonRunCellAction(code) - IPython code to run
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+    ):
         self.python_code = None
         self.jupyter_kernel_init_code: str = 'from agentskills import *'
 
@@ -124,7 +127,9 @@ class SearcherAgentActionParserIPythonRunCell(ActionParser):
         return self.python_code is not None
 
     def parse(self, action_str: str) -> Action:
-        assert self.python_code is not None
+        assert (
+            self.python_code is not None
+        ), 'self.python_code should not be None when parse is called'
         code_group = self.python_code.group(1).strip()
         thought = action_str.replace(self.python_code.group(0), '').strip()
         return IPythonRunCellAction(
@@ -134,7 +139,7 @@ class SearcherAgentActionParserIPythonRunCell(ActionParser):
         )
 
 
-class SearcherAgentActionParserMessage(ActionParser):
+class TesterAgentActionParserMessage(ActionParser):
     """Parser action:
     - MessageAction(content) - Message action to run (e.g. ask for clarification)
     """
