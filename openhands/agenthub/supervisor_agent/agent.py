@@ -60,8 +60,7 @@ class SupervisorAgent(Agent):
             self.suggested_approaches = self.get_suggested_approaches(state)
         self.suggested_approach_index += 1
 
-        last_observation = state.history.get_last_observation()
-        # At first the history is empty, so we proceed to the SearchAgent
+        last_observation = state.history[-1] if state.history else None
         if isinstance(last_observation, AgentDelegateObservation):
             self.results[self.phase].append(last_observation.outputs.get('output', ''))
 
@@ -132,7 +131,10 @@ class SupervisorAgent(Agent):
 
     def get_suggested_approaches(self, state: State):
         self.logger.debug('No suggested approaches found, breaking down task.')
-        self.task, _ = state.get_current_user_intent()
+        task, _ = state.get_current_user_intent()
+        if not task:
+            return []
+        self.task = task
         suggested_approaches = self.ask_llm(self.task, 'search')
         self.logger.debug('Suggested approaches: %s', self.suggested_approaches)
         if not suggested_approaches:
