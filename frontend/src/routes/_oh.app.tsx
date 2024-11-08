@@ -36,6 +36,7 @@ import ListIcon from "#/assets/list-type-number.svg?react";
 import { createChatMessage } from "#/services/chatService";
 import {
   clearFiles,
+  clearInitialQuery,
   clearSelectedRepository,
   setImportedProjectZip,
 } from "#/state/initial-query-slice";
@@ -114,7 +115,6 @@ export const clientAction = async ({ request }: ClientActionFunctionArgs) => {
 };
 
 function App() {
-  console.log("render app");
   const dispatch = useDispatch();
   const { files, importedProjectZip } = useSelector(
     (state: RootState) => state.initalQuery,
@@ -255,6 +255,7 @@ function App() {
     dispatch(clearMessages());
     dispatch(clearTerminal());
     dispatch(clearJupyter());
+    dispatch(clearInitialQuery()); // Clear initial query when navigating to /app
     startSocketConnection();
   });
 
@@ -292,7 +293,7 @@ function App() {
   return (
     <div className="flex flex-col h-full gap-3">
       <div className="flex h-full overflow-auto gap-3">
-        <Container className="w-[390px] max-h-full">
+        <Container className="w-[390px] max-h-full relative">
           <ChatInterface />
         </Container>
 
