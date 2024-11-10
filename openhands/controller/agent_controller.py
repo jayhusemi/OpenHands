@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import logging
 import traceback
 from typing import Callable, ClassVar, Type
 
@@ -104,6 +105,7 @@ class AgentController:
         self.id = sid
         self.agent = agent
         self.headless_mode = headless_mode
+        self.logger = logging.getLogger(f'AgentController-{sid}')
 
         # subscribe to the event stream
         self.event_stream = event_stream
