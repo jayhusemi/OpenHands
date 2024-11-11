@@ -1,8 +1,8 @@
 import logging
-from typing import Any, Dict, List, Literal, Union
+import re
+from typing import Any, Dict, List
 
 from openhands.agenthub.supervisor_agent.prompt import (
-    TASK_TYPE_ISSUE,
     get_prompt,
 )
 from openhands.controller.agent import Agent
@@ -10,11 +10,12 @@ from openhands.controller.state.state import State
 from openhands.core.config import AgentConfig
 from openhands.core.config.llm_config import LLMConfig
 from openhands.core.message import Message, TextContent
-from openhands.core.utils import json
 from openhands.events.action import Action, AgentDelegateAction, AgentFinishAction
-from openhands.events.action.agent import AgentRejectAction
 from openhands.events.observation.delegate import AgentDelegateObservation
 from openhands.llm.llm import LLM
+from openhands.runtime.plugins.agent_skills import AgentSkillsRequirement
+from openhands.runtime.plugins.jupyter import JupyterRequirement
+from openhands.runtime.plugins.requirement import PluginRequirement
 
 
 class SupervisorAgent(Agent):
@@ -32,7 +33,21 @@ class SupervisorAgent(Agent):
     does_it_needs_a_test: bool = False
     task: str = ''
     test_command: str = ''
-    phase: Literal['search', 'summary', 'code'] = 'search'
+    time_to_stop: int = 60  # Every 60 iterations, we stop and evaluate the approach
+
+    sandbox_plugins: list[PluginRequirement] = [
+        # NOTE: AgentSkillsRequirement need to go before JupyterRequirement, since
+        # AgentSkillsRequirement provides a lot of Python functions,
+        # and it needs to be initialized before Jupyter for Jupyter to use those functions.
+        AgentSkillsRequirement(),
+        JupyterRequirement(),
+    ]
+
+    # Add class attribute for tried_direct_code
+    tried_direct_code: bool = False
+
+    # Add class attribute for augmented_task
+    augmented_task: str = ''
 
     def __init__(self, llm: LLM, config: AgentConfig):
         """Initialize the Supervisor Agent with an LLM
@@ -55,122 +70,85 @@ class SupervisorAgent(Agent):
     def step(self, state: State) -> Action:
         self.logger.debug('Starting step with state: %s', state)
         self.logger.debug('LLM config: %s', self.llm_config)
+        last_observation = state.history[-1]
+        task, _ = state.get_current_user_intent()
+        self.task = task or ''
 
-        if len(self.suggested_approaches) == 0:
-            self.suggested_approaches = self.get_suggested_approaches(state)
-        self.suggested_approach_index += 1
-
-        last_observation = state.history[-1] if state.history else None
-        if isinstance(last_observation, AgentDelegateObservation):
-            self.results[self.phase].append(last_observation.outputs.get('output', ''))
-
-        if self.suggested_approach_index < len(self.suggested_approaches):
-            # Delegate to the SearcherAgent as we need to gather more information
-            return self.delegate_to_agent(
-                'SearcherAgent',
-                self.task,
-                self.suggested_approaches[self.suggested_approach_index].get(
-                    'suggested_approach', []
-                ),
+        # import pdb; pdb.set_trace()
+        # Try CodeActAgent first if we haven't tried it yet
+        if not self.tried_direct_code:
+            prompt = get_prompt(self.task, [], 'initial')
+            raw_response = self.get_response(prompt)
+            match = re.search(
+                r'<augmented_pr_description>(.*?)</augmented_pr_description>',
+                raw_response,
+                re.DOTALL,
+            )
+            self.augmented_task = match.group(1).strip('"') if match else self.task
+            self.tried_direct_code = True
+            return AgentDelegateAction(
+                agent='CodeActAgent',
+                inputs={
+                    'task': self.task,
+                    'augmented_task': self.augmented_task,
+                    'when_to_stop': self.time_to_stop,
+                },
             )
 
-        if self.phase == 'search':
-            condensed_information = self.ask_llm(
-                self.task, 'summary', self.results[self.phase]
-            )
-            if condensed_information and len(condensed_information) > 0:
-                first_result = condensed_information[0]
-                if first_result.get('summary', '') != '':
-                    self.phase = 'summary'
-                    self.condensed_information = first_result.get('summary', '')
-                else:
-                    suggested_approach: str | list[str] = first_result.get(
-                        'suggested_approach', []
-                    )
-                    self.results['search'].append(suggested_approach)
-                    return self.delegate_to_agent(
-                        'SearcherAgent', self.task, suggested_approach
-                    )
+        if not isinstance(last_observation, AgentDelegateObservation):
+            raise ValueError('Last observation is not an AgentDelegateObservation')
 
-        if self.phase == 'summary':
-            if not self.does_it_needs_a_test:
-                test_check = self.ask_llm(self.task, 'code', self.condensed_information)
-                first_check = (
-                    test_check[0] if test_check and len(test_check) > 0 else {}
+        if not last_observation.outputs.get('fixed', False):
+            trayectory: List[Dict] = last_observation.outputs['trayectory']
+            deserialized_trajectory = [
+                Message(
+                    role=msg_dict['role'],
+                    content=[
+                        TextContent(text=content_text)
+                        for content_text in [
+                            msg_dict['content'][0]['text']
+                            if isinstance(msg_dict['content'], list)
+                            else msg_dict['content']
+                        ]
+                    ],
+                    tool_call_id=msg_dict.get('tool_call_id'),
+                    name=msg_dict.get('name'),
                 )
-                self.does_it_needs_a_test = (
-                    first_check.get('suggested_approach', '') == TASK_TYPE_ISSUE
-                )
-                self.phase = 'code'
-                if self.does_it_needs_a_test:
-                    self.current_delegate = 'TesterAgent'
-                    return AgentDelegateAction(
-                        agent='TesterAgent',
-                        inputs={
-                            'task': self.task,
-                            'summary': self.condensed_information,
-                        },
-                    )
-        if self.phase == 'code':
-            if (
-                self.does_it_needs_a_test
-                and last_observation is not None
-                and isinstance(last_observation, AgentDelegateObservation)
-            ):
-                self.test_command = last_observation.outputs.get('output', '')
+                for msg_dict in trayectory
+            ]
+            # import pdb; pdb.set_trace()
+            prompt = get_prompt(self.task, deserialized_trajectory, 'right_track')
+            raw_response = self.get_response(prompt)
+            match = re.search(r'<answer>(.*?)</answer>', raw_response, re.DOTALL)
+            if match and 'yes' in match.group(1).lower():
                 return AgentDelegateAction(
-                    agent='CoderAgent',
+                    agent='CodeActAgent',
                     inputs={
                         'task': self.task,
-                        'summary': self.condensed_information,
-                        'test_command': self.test_command,
+                        'trayectory': trayectory,
+                        'when_to_stop': self.time_to_stop,
                     },
                 )
-
+            # pdb.set_trace()
+            prompt = get_prompt(self.task, deserialized_trajectory, 'refactor')
+            raw_response = self.get_response(prompt)
+            match = re.search(r'<next_step>(.*?)</next_step>', raw_response, re.DOTALL)
+            next_step = match.group(1).strip('"') if match else ''
+            self.logger.debug('Suggested approach: %s', next_step)
+            return AgentDelegateAction(
+                agent='CodeActAgent',
+                inputs={
+                    'task': self.task,
+                    'trayectory': trayectory,
+                    'next_step': next_step,
+                    'when_to_stop': self.time_to_stop,
+                },
+            )
         return AgentFinishAction()
 
-    def get_suggested_approaches(self, state: State):
-        self.logger.debug('No suggested approaches found, breaking down task.')
-        task, _ = state.get_current_user_intent()
-        if not task:
-            return []
-        self.task = task
-        suggested_approaches = self.ask_llm(self.task, 'search')
-        self.logger.debug('Suggested approaches: %s', self.suggested_approaches)
-        if not suggested_approaches:
-            return AgentRejectAction()
-        return suggested_approaches
-
-    def delegate_to_agent(
-        self, agent_name: str, task: str, suggested_approach: Union[str, List[str]]
-    ) -> AgentDelegateAction:
-        self.logger.debug(f'Delegating to agent: {agent_name}')
-        self.current_delegate = agent_name
-        # Join the list of strings with newlines if it's a list
-        approach = (
-            '\n'.join(suggested_approach)
-            if isinstance(suggested_approach, list)
-            else suggested_approach
-        )
-        return AgentDelegateAction(
-            agent=agent_name, inputs={'task': task, 'suggested_approach': approach}
-        )
-
-    def ask_llm(
-        self, task: str, phase: str, search_results: Union[str, List[str]] = ''
-    ) -> List[Dict[str, str]]:
-        # Format search_results as one item per line if it's a list
-        if isinstance(search_results, list):
-            search_results = '\n'.join(search_results)
-        prompt = get_prompt(task, phase, search_results)
-        return self.get_response(prompt)
-
-    def get_response(self, prompt: str) -> List[Dict[str, str]]:
-        content = [TextContent(text=prompt)]
-        message = Message(role='user', content=content)
+    def get_response(self, prompt: str) -> str:
+        message = Message(role='user', content=[TextContent(text=prompt)])
         response = self.llm.completion(
             messages=self.llm.format_messages_for_llm(message)
         )
-        if isinstance(response, list):
-            return json.loads(response[0]['message']['content'])
-        return json.loads(response['choices'][0]['message']['content'])
+        return response['choices'][0]['message']['content']

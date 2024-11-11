@@ -13,6 +13,7 @@ from litellm import (
 )
 
 from openhands.core.logger import openhands_logger as logger
+from openhands.core.message import Message
 from openhands.events.action import (
     Action,
     AgentDelegateAction,
@@ -448,7 +449,11 @@ def combine_thought(action: Action, thought: str) -> Action:
     return action
 
 
-def response_to_actions(response: ModelResponse) -> list[Action]:
+def response_to_actions(
+    response: ModelResponse, messages: list[Message] | None = None
+) -> list[Action]:
+    if messages is None:
+        messages = []
     actions: list[Action] = []
     assert len(response.choices) == 1, 'Only one choice is supported for now'
     assistant_msg = response.choices[0].message
@@ -481,7 +486,9 @@ def response_to_actions(response: ModelResponse) -> list[Action]:
                     inputs=arguments,
                 )
             elif tool_call.function.name == 'finish':
-                action = AgentFinishAction()
+                action = AgentFinishAction(
+                    outputs={'fixed': True, 'trayectory': messages}
+                )
             elif tool_call.function.name == 'edit_file':
                 action = FileEditAction(**arguments)
             elif tool_call.function.name == 'str_replace_editor':

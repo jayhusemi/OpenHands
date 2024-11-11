@@ -1,4 +1,3 @@
-import json
 import os
 from collections import deque
 from itertools import islice
@@ -13,6 +12,7 @@ from openhands.core.config import AgentConfig
 from openhands.core.config.llm_config import LLMConfig
 from openhands.core.logger import openhands_logger as logger
 from openhands.core.message import ImageContent, Message, TextContent
+from openhands.core.utils import json
 from openhands.events.action import (
     Action,
     AgentDelegateAction,
@@ -73,6 +73,8 @@ class CodeActAgent(Agent):
         JupyterRequirement(),
     ]
     obs_prefix = 'OBSERVATION:\n'
+    when_to_stop = 6
+    number_of_events = -1
 
     def __init__(
         self,
@@ -85,6 +87,7 @@ class CodeActAgent(Agent):
         - llm (LLM): The llm to be used by this agent
         """
 
+        # import pdb; pdb.set_trace()
         llm_config = LLMConfig(
             model='litellm_proxy/claude-3-5-sonnet-20241022',
             api_key='REDACTED',
@@ -93,10 +96,9 @@ class CodeActAgent(Agent):
         )
         llm = LLM(llm_config)
         # TODO: Remove this once we have a real AgentConfig
-        config = AgentConfig(llm_config='o1-mini')
+        config = AgentConfig()
         super().__init__(llm, config)
         self.reset()
-
         self.micro_agent = (
             MicroAgent(
                 os.path.join(
@@ -343,6 +345,11 @@ class CodeActAgent(Agent):
         - MessageAction(content) - Message action to run (e.g. ask for clarification)
         - AgentFinishAction() - end the interaction
         """
+
+        # If this agent has a supervisor, we need to get the time to stop from the supervisor
+        if self.when_to_stop < 0 and state.inputs.get('when_to_stop', None):
+            self.when_to_stop = state.inputs['when_to_stop']
+
         # Continue with pending actions if any
         if self.pending_actions:
             return self.pending_actions.popleft()
@@ -350,7 +357,21 @@ class CodeActAgent(Agent):
         # if we're done, go back
         last_user_message = state.get_last_user_message()
         if last_user_message and last_user_message.strip() == '/exit':
-            return AgentFinishAction()
+            messages = self._get_messages(state)
+            serialized_messages = [msg.model_dump() for msg in messages]
+            return AgentFinishAction(
+                outputs={'fixed': True, 'trayectory': serialized_messages}
+            )
+
+        # if we've reached the max number of iterations, go back for an evaluation on the approach
+        if self.when_to_stop > 0 and state.local_iteration % self.when_to_stop == 0:
+            messages = self._get_messages(state)
+            serialized_messages = [
+                msg.model_dump() for msg in messages
+            ]  # Serialize each Message object
+            return AgentFinishAction(
+                outputs={'trayectory': serialized_messages, 'fixed': False}
+            )
 
         # prepare what we want to send to the LLM
         messages = self._get_messages(state)
@@ -409,17 +430,60 @@ class CodeActAgent(Agent):
             - Messages from the same role are combined to prevent consecutive same-role messages
             - For Anthropic models, specific messages are cached according to their documentation
         """
-        messages: list[Message] = [
-            Message(
-                role='system',
-                content=[
-                    TextContent(
-                        text=self.system_prompt,
-                        cache_prompt=self.llm.is_caching_prompt_active(),  # Cache system prompt
-                    )
-                ],
+        # import pdb; pdb.set_trace()
+        messages: list[Message] = []
+        trayectory = state.inputs.get('trayectory', '')
+        # If there is no trayectory, its the first time we are seeing the task
+        if not trayectory:
+            messages.append(
+                Message(
+                    role='system',
+                    content=[
+                        TextContent(
+                            text=self.system_prompt,
+                            cache_prompt=self.llm.is_caching_prompt_active(),  # Cache system prompt
+                        )
+                    ],
+                )
             )
-        ]
+            if state.inputs.get('task', '') != '':
+                # During AgentDelegation the history is empty, so we add the task as the user message.
+                messages.append(
+                    Message(
+                        role='user',
+                        content=[TextContent(text=state.inputs['task'])],
+                    )
+                )
+
+            if state.inputs.get('augmented_task', ''):
+                messages.append(
+                    Message(
+                        role='user',
+                        content=[TextContent(text=state.inputs['augmented_task'])],
+                    )
+                )
+        else:
+            # If there is a previous trayectory, we restore it.
+            deserialized_trajectory = [
+                Message(
+                    role='user',
+                    content=[
+                        TextContent(text=content_text)
+                        for content_text in [
+                            msg_dict['content'][0]['text']
+                            if isinstance(msg_dict['content'], list)
+                            else msg_dict['content']
+                        ]
+                        if content_text  # Skip empty content
+                    ],
+                    tool_call_id=msg_dict.get('tool_call_id'),
+                    name=msg_dict.get('name'),
+                )
+                for msg_dict in trayectory
+                if msg_dict.get('content')  # Skip messages with no content
+            ]
+            messages.extend(deserialized_trajectory)
+
         if self.initial_user_message:
             messages.append(
                 Message(
@@ -431,7 +495,9 @@ class CodeActAgent(Agent):
         pending_tool_call_action_messages: dict[str, Message] = {}
         tool_call_id_to_message: dict[str, Message] = {}
         events = list(state.history)
-        for event in events:
+        if self.number_of_events < 0:
+            self.number_of_events = len(events)
+        for i, event in enumerate(events):
             # create a regular message from an event
             if isinstance(event, Action):
                 messages_to_add = self.get_action_message(
@@ -445,6 +511,14 @@ class CodeActAgent(Agent):
                 )
             else:
                 raise ValueError(f'Unknown event type: {type(event)}')
+
+            if i == self.number_of_events and state.inputs.get('next_step', ''):
+                messages_to_add = [
+                    Message(
+                        role='user',
+                        content=[TextContent(text=state.inputs['next_step'])],
+                    )
+                ]
 
             # Check pending tool call action messages and see if they are complete
             _response_ids_to_remove = []
@@ -487,6 +561,13 @@ class CodeActAgent(Agent):
                         messages[-1].content.extend(message.content)
                     else:
                         messages.append(message)
+
+        if self.number_of_events == len(events) and state.inputs.get('next_step', ''):
+            messages.append(
+                Message(
+                    role='user', content=[TextContent(text=state.inputs['next_step'])]
+                )
+            )
 
         if self.llm.is_caching_prompt_active():
             # NOTE: this is only needed for anthropic
