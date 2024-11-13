@@ -73,7 +73,7 @@ class CodeActAgent(Agent):
         JupyterRequirement(),
     ]
     obs_prefix = 'OBSERVATION:\n'
-    when_to_stop = 6
+    when_to_stop = -1
     number_of_events = -1
 
     def __init__(
@@ -363,16 +363,6 @@ class CodeActAgent(Agent):
                 outputs={'fixed': True, 'trayectory': serialized_messages}
             )
 
-        # if we've reached the max number of iterations, go back for an evaluation on the approach
-        if self.when_to_stop > 0 and state.local_iteration % self.when_to_stop == 0:
-            messages = self._get_messages(state)
-            serialized_messages = [
-                msg.model_dump() for msg in messages
-            ]  # Serialize each Message object
-            return AgentFinishAction(
-                outputs={'trayectory': serialized_messages, 'fixed': False}
-            )
-
         # prepare what we want to send to the LLM
         messages = self._get_messages(state)
         params: dict = {
@@ -389,6 +379,15 @@ class CodeActAgent(Agent):
                 '</file_edit>',
             ]
         response = self.llm.completion(**params)
+
+        # if we've reached the max number of iterations, go back for an evaluation on the approach
+        if self.when_to_stop > 0 and state.local_iteration % self.when_to_stop == 0:
+            return AgentFinishAction(
+                outputs={
+                    'response': response['choices'][0]['message']['content'],
+                    'fixed': False,
+                }
+            )
 
         if self.function_calling_active:
             actions = codeact_function_calling.response_to_actions(response)

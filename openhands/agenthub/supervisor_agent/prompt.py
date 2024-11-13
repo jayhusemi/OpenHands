@@ -1,3 +1,5 @@
+from typing import Optional
+
 from openhands.core.message import Message, TextContent
 
 HISTORY_SIZE = 20
@@ -8,9 +10,8 @@ HISTORY_SIZE = 20
 # 2. Implementing the solution.
 # Then the manager needs to check if the issue has been fixed, if not, it needs to iterate.
 general_description = """
-You are a helpful assistant that can provides DETAILED guidance on how to fix an issue in a codebase.
+You are a helpful assistant that provides a detailed step-by-step plan.
 """
-
 side_effects_description = """
 You are a helpful assistant that creative insights into the side-effects of changes made.
 
@@ -26,6 +27,7 @@ ALWAYS output all your reasoning, be as detailed as possible.
 - Testing has been taken into account, so you should not mention it in any way!
 - Be aware of consistency issues!
 - Provide ONLY the related functions. (e.g. If the <pr_description> mentions the write function, then generate the read function).
+- Encapsulate your suggestions in between <suggestions> and </suggestions> tags.
 </IMPORTANT>
 
 EXAMPLE:
@@ -34,6 +36,22 @@ The changes require to change how the data is stored.
 </pr_description>
 After implementing those changes:
 - The parser functions that read the data might need to be updated to adapt to the new format.
+
+END OF EXAMPLE
+"""
+
+high_level_task = """
+
+%(task)s
+
+Can you create a summary with all the functional and non-functional requirements for the task described in <pr_description>?
+
+<IMPORTANT>
+- Encapsulate your suggestions in between <requirements> and </requirements> tags.
+- Documentation has been taken into account, so you should not mention it in any way!
+- Testing has been taken into account, so you should not mention it in any way!
+- Do NOT consider performance implications
+</IMPORTANT>
 """
 
 initial_prompt = """
@@ -41,46 +59,44 @@ I am trying to fix the following issue:
 
 %(task)s
 
-Try to imagine with all details how would you fix the <pr_description>. What is the root cause of the issue?
-Consider opposite scenarios (eg. if the <pr_description> is writing to a file, consider what happens when the file is read).
-Consider edge cases (eg. what if the file doesn't exist?).
+I have already thought out the functional and non-functional requirements for the task described in <pr_description>:
 
-I've already taken care of all changes to any of the test files described in the <pr_description>. This means you DON'T have to think about the testing logic or any of the tests in any way!
-The idea is to make the minimal changes to non-tests files in the /workspace directory to ensure the <pr_description> is satisfied.
+<requirements>
+%(requirements)s
+</requirements>
 
-How would you fix the issue described in the <pr_description> with the least amount of steps? Generate the augmented <pr_description> with the least amount of steps to fix the issue in between <augmented_pr_description> and </augmented_pr_description> tags.
-Each step MUST be very detailed as to why is needed.
+create a step-by-step plan broken down into phases for how to implement this using requirements mentioned in <requirements>.
+
 Your thinking should be thorough and so it's fine if it's very long.
-Be as detailed as possible.
 
-Documentation has been taken into account, so you should not repeat it in the <augmented_pr_description>.
-Testing has been taken into account, so you should not repeat it in the <augmented_pr_description>. You can create new tests, but never use existing tests.
-ALWAYS output all your reasoning, be as detailed as possible.
-
-Follow this structure:
-1. As a first step, it might be a good idea to explore the repo to familiarize yourself with its structure.
-  - Files to explore, parts of the codebase I should focus on, keywords to look for...
-  - Extended reasoning...
-2. Create a script to reproduce the error and execute it to confirm that the error is reproducible
-  - Ensure that when executing the script, you get the error described in the <pr_description>
-  - Suggested code to reproduce the error, keeping in mind the side-effects described in the previous step, so that the error and side-effects are reproducible
-  - Extended reasoning...
-3. Edit the sourcecode of the repo to resolve the issue
-  - Suggest what files to change and code SUGGESTIONS. Trying to fix the issue in <pr_description> with the least amount of changes.
-  - Keep in mind for the code suggestions that I might need to change some other functions to prevent the side-effects described in the previous steps.
-  - Extended reasoning...
-4. Rerun your reproduce script and confirm that the error is fixed!
+Documentation has been taken into account, so you should not repeat it in the <steps>.
+I've already taken care of all changes to any of the test files described in the <pr_description>. This means you DON'T have to modify the testing logic or any of the tests in any way!
 
 <IMPORTANT>
-One step MUST be to recreate the issue and ensure that the error log is the same as the one described in the <pr_description>.
+- Encapsulate your suggestions in between <steps> and </steps> tags.
+- One step MUST be about reproducing the issue with a simple script, no pytest!
+- The goal is to fix the issue with the MINIMAL changes to non-tests files in the /workspace directory.
 </IMPORTANT>
 
-Example:
-<augmented_pr_description>
+REMEMBER: the idea is to fix the issue with the MINIMAL changes to non-tests files in the /workspace directory.
+"""
 
-</augmented_pr_description>
+code_act_agent_prompt = """
 
-REMEMBER: you ARE ONLY suggesting steps to fix the issue, do NOT be assertive, use the language of a suggestion.
+Can you help me implement the necessary changes to the repository so that the requirements specified in the <pr_description> are met?
+I've already taken care of all changes to any of the test files described in the <pr_description>. This means you DON'T have to modify the testing logic or any of the tests in any way!
+Your task is to make the minimal changes to non-tests files in the /workspace directory to ensure the <pr_description> is satisfied.
+Follow the steps described in <steps> to resolve the issue:
+
+<steps>
+%(steps)s
+</steps>
+
+<IMPORTANT>
+- When reproducing the issue, use a simple Python script and directly examine its output instead of pytest.
+</IMPORTANT>
+
+Your turn!
 """
 
 right_track_prompt = """
@@ -144,7 +160,7 @@ Your thinking should be thorough and so it's fine if it's very long.
 """
 
 
-def format_conversation(trajectory: list[Message]) -> str:
+def format_conversation(trajectory: Optional[list[Message]] = None) -> str:
     """Format a conversation history into a readable string.
 
     Args:
@@ -153,6 +169,8 @@ def format_conversation(trajectory: list[Message]) -> str:
     Returns:
         Formatted string representing the conversation
     """
+    if trajectory is None:
+        trajectory = []
     formatted_parts = []
 
     for message in trajectory:
@@ -170,9 +188,10 @@ def format_conversation(trajectory: list[Message]) -> str:
 
 def get_prompt(
     task: str,
-    trajectory: list[Message],
+    trajectory: Optional[list[Message]] = None,
     prompt_type: str = 'initial',
     augmented_task: str = '',
+    requirements: str = '',
 ) -> str:
     """Format and return the appropriate prompt based on prompt_type.
 
@@ -184,27 +203,23 @@ def get_prompt(
     Returns:
         Formatted prompt string
     """
+    if trajectory is None:
+        trajectory = []
     # If approach is a conversation history, format it
-    if trajectory:
-        approach = format_conversation(trajectory)
-    else:
-        approach = ''
+    approach = format_conversation(trajectory)
 
     # Select the appropriate prompt template
-    if prompt_type == 'initial':
-        template = initial_prompt
-    elif prompt_type == 'right_track':
-        template = right_track_prompt
-    elif prompt_type == 'refactor':
-        template = refactor_prompt
-    elif prompt_type == 'critical':
-        template = critical_prompt
+    template = {
+        'initial': initial_prompt,
+        'right_track': right_track_prompt,
+        'refactor': refactor_prompt,
+        'critical': critical_prompt,
+        'high_level_task': high_level_task,
+    }[prompt_type]
 
-    # Format the selected template with the task and approach
-    formatted_prompt = general_description + template % {
+    return general_description + template % {
         'task': task,
         'approach': approach,
         'augmented_pr_description': augmented_task,
+        'requirements': requirements,
     }
-
-    return formatted_prompt

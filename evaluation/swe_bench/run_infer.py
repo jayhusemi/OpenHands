@@ -47,6 +47,7 @@ AGENT_CLS_TO_FAKE_USER_RESPONSE_FN = {
     'CodeActAgent': codeact_user_response,
     'CodeActSWEAgent': codeact_user_response,
     'SupervisorAgent': codeact_user_response,
+    'DelegatorAgent': codeact_user_response,
 }
 
 
@@ -69,6 +70,13 @@ def get_instruction(instance: pd.Series, metadata: EvalMetadata):
                 f'--- BEGIN HINTS ---\n{instance.hints_text}\n--- END HINTS ---\n'
             )
         instruction += CODEACT_SWE_PROMPT.format(workspace_dir_name=workspace_dir_name)
+    elif metadata.agent_class == 'DelegatorAgent':
+        instruction = (
+            f"I've uploaded a python code repository in the directory {workspace_dir_name}. Consider the following PR description:\n\n"
+            f'<pr_description>\n'
+            f'{instance.problem_statement}\n'
+            '</pr_description>\n\n'
+        )
     else:
         # Instruction based on Anthropic's official trajectory
         # https://github.com/eschluntz/swe-bench-experiments/tree/main/evaluation/verified/20241022_tools_claude-3-5-sonnet-updated/trajs
@@ -92,20 +100,6 @@ def get_instruction(instance: pd.Series, metadata: EvalMetadata):
             "Your thinking should be thorough and so it's fine if it's very long.\n"
         )
 
-    instruction += (
-        '<IMPORTANT>\n'
-        '- You MUST generate only one action per turn!\n'
-        '- A patch is a set of changes to the source code of the codebase that you are given\n'
-        '- You MUST generate a patch that attempts to fix the issue described in the <pr_description>\n'
-        '</IMPORTANT>\n'
-    )
-
-    if RUN_WITH_BROWSING:
-        instruction += (
-            '<IMPORTANT!>\n'
-            'You SHOULD NEVER attempt to browse the web. '
-            '</IMPORTANT!>\n'
-        )
     return instruction
 
 

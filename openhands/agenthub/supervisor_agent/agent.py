@@ -2,9 +2,7 @@ import logging
 import re
 from typing import Any, Dict, List
 
-from openhands.agenthub.supervisor_agent.prompt import (
-    get_prompt,
-)
+from openhands.agenthub.supervisor_agent.prompt import code_act_agent_prompt, get_prompt
 from openhands.controller.agent import Agent
 from openhands.controller.state.state import State
 from openhands.core.config import AgentConfig
@@ -12,6 +10,7 @@ from openhands.core.config.llm_config import LLMConfig
 from openhands.core.message import Message, TextContent
 from openhands.events.action import Action, AgentDelegateAction, AgentFinishAction
 from openhands.events.observation.delegate import AgentDelegateObservation
+from openhands.events.observation.observation import Observation
 from openhands.llm.llm import LLM
 from openhands.runtime.plugins.agent_skills import AgentSkillsRequirement
 from openhands.runtime.plugins.jupyter import JupyterRequirement
@@ -34,6 +33,7 @@ class SupervisorAgent(Agent):
     task: str = ''
     test_command: str = ''
     time_to_stop: int = 60  # Every 60 iterations, we stop and evaluate the approach
+    phase: int = 0
 
     sandbox_plugins: list[PluginRequirement] = [
         # NOTE: AgentSkillsRequirement need to go before JupyterRequirement, since
@@ -56,7 +56,7 @@ class SupervisorAgent(Agent):
         - llm (LLM): The llm to be used by this agent
         """
         llm_config = LLMConfig(
-            model='openai/o1-mini', api_key='REDACTED', temperature=1.0
+            model='openai/o1-preview', api_key='REDACTED', temperature=1.0
         )
         llm = LLM(llm_config)
         # TODO: Remove this once we have a real AgentConfig
@@ -70,77 +70,53 @@ class SupervisorAgent(Agent):
     def step(self, state: State) -> Action:
         self.logger.debug('Starting step with state: %s', state)
         self.logger.debug('LLM config: %s', self.llm_config)
-        last_observation = state.history[-1]
+        last_observation: Observation | None = None
+        for event in reversed(state.history):
+            if isinstance(event, Observation):
+                last_observation = event
+                break
+
         task, _ = state.get_current_user_intent()
         self.task = task or ''
 
-        # import pdb; pdb.set_trace()
-        # Try CodeActAgent first if we haven't tried it yet
-        if not self.tried_direct_code:
-            prompt = get_prompt(self.task, [], 'initial')
-            raw_response = self.get_response(prompt)
-            match = re.search(
-                r'<augmented_pr_description>(.*?)</augmented_pr_description>',
-                raw_response,
-                re.DOTALL,
-            )
-            self.augmented_task = match.group(1).strip('"') if match else self.task
-            self.tried_direct_code = True
+        if self.phase == 0:
+            self.phase += 1
+            prompt = get_prompt(self.task, None, 'high_level_task')
             return AgentDelegateAction(
                 agent='CodeActAgent',
                 inputs={
-                    'task': self.task,
-                    'augmented_task': self.augmented_task,
-                    'when_to_stop': self.time_to_stop,
+                    'task': prompt,
+                    'when_to_stop': 1,
                 },
             )
 
         if not isinstance(last_observation, AgentDelegateObservation):
-            raise ValueError('Last observation is not an AgentDelegateObservation')
+            return AgentFinishAction()
 
         if not last_observation.outputs.get('fixed', False):
-            trayectory: List[Dict] = last_observation.outputs['trayectory']
-            deserialized_trajectory = [
-                Message(
-                    role=msg_dict['role'],
-                    content=[
-                        TextContent(text=content_text)
-                        for content_text in [
-                            msg_dict['content'][0]['text']
-                            if isinstance(msg_dict['content'], list)
-                            else msg_dict['content']
-                        ]
-                    ],
-                    tool_call_id=msg_dict.get('tool_call_id'),
-                    name=msg_dict.get('name'),
-                )
-                for msg_dict in trayectory
-            ]
-            # import pdb; pdb.set_trace()
-            prompt = get_prompt(self.task, deserialized_trajectory, 'right_track')
+            response: str = last_observation.outputs['response']
+            match = re.search(
+                r'<requirements>(.*?)</requirements>', str(response), re.DOTALL
+            )
+            self.requirements = match.group(1).strip('"') if match else ''
+
+            self.phase += 1
+            prompt = get_prompt(
+                self.task, None, 'initial', requirements=self.requirements
+            )
             raw_response = self.get_response(prompt)
-            match = re.search(r'<answer>(.*?)</answer>', raw_response, re.DOTALL)
-            if match and 'yes' in match.group(1).lower():
-                return AgentDelegateAction(
-                    agent='CodeActAgent',
-                    inputs={
-                        'task': self.task,
-                        'trayectory': trayectory,
-                        'when_to_stop': self.time_to_stop,
-                    },
-                )
-            # pdb.set_trace()
-            prompt = get_prompt(self.task, deserialized_trajectory, 'refactor')
-            raw_response = self.get_response(prompt)
-            match = re.search(r'<next_step>(.*?)</next_step>', raw_response, re.DOTALL)
-            next_step = match.group(1).strip('"') if match else ''
-            self.logger.debug('Suggested approach: %s', next_step)
+            match = re.search(
+                r'<steps>(.*?)</steps>',
+                raw_response,
+                re.DOTALL,
+            )
+            steps = match.group(1).strip('"') if match else self.task
+
             return AgentDelegateAction(
                 agent='CodeActAgent',
                 inputs={
                     'task': self.task,
-                    'trayectory': trayectory,
-                    'next_step': next_step,
+                    'next_step': code_act_agent_prompt % {'steps': steps},
                     'when_to_stop': self.time_to_stop,
                 },
             )
