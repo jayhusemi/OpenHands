@@ -392,10 +392,21 @@ class CodeActAgent(Agent):
         if self.function_calling_active:
             actions = codeact_function_calling.response_to_actions(response)
             for action in actions:
+                # Add trajectory to AgentFinishAction outputs
+                if isinstance(action, AgentFinishAction):
+                    messages = self._get_messages(state)
+                    serialized_messages = [msg.model_dump() for msg in messages]
+                    action.outputs['trayectory'] = serialized_messages
                 self.pending_actions.append(action)
             return self.pending_actions.popleft()
         else:
-            return self.action_parser.parse(response)
+            action = self.action_parser.parse(response)
+            # Add trajectory to AgentFinishAction outputs
+            if isinstance(action, AgentFinishAction):
+                messages = self._get_messages(state)
+                serialized_messages = [msg.model_dump() for msg in messages]
+                action.outputs['trayectory'] = serialized_messages
+            return action
 
     def _get_messages(self, state: State) -> list[Message]:
         """Constructs the message history for the LLM conversation.
@@ -454,11 +465,11 @@ class CodeActAgent(Agent):
                     )
                 )
 
-            if state.inputs.get('augmented_task', ''):
+            if state.inputs.get('plan', ''):
                 messages.append(
                     Message(
                         role='user',
-                        content=[TextContent(text=state.inputs['augmented_task'])],
+                        content=[TextContent(text=state.inputs['plan'])],
                     )
                 )
         else:
@@ -545,13 +556,22 @@ class CodeActAgent(Agent):
             for response_id in _response_ids_to_remove:
                 pending_tool_call_action_messages.pop(response_id)
 
+            empty = False
             for message in messages_to_add:
+                # Check if message content is empty
+                if not any(content.text for content in message.content):
+                    logger.warning(f'Skipping message with empty content: {message}')
+                    empty = True
+                    continue
                 # add regular message
                 if message:
                     # handle error if the message is the SAME role as the previous message
                     # litellm.exceptions.BadRequestError: litellm.BadRequestError: OpenAIException - Error code: 400 - {'detail': 'Only supports u/a/u/a/u...'}
                     # there shouldn't be two consecutive messages from the same role
                     # NOTE: we shouldn't combine tool messages because each of them has a different tool_call_id
+                    if empty:
+                        empty = False
+                        message.role = 'user'
                     if (
                         messages
                         and messages[-1].role == message.role
@@ -603,4 +623,16 @@ class CodeActAgent(Agent):
                 reminder_text = f'\n\nENVIRONMENT REMINDER: You have {state.max_iterations - state.iteration} turns left to complete the task. When finished reply with <finish></finish>.'
                 latest_user_message.content.append(TextContent(text=reminder_text))
 
+        reminder_text = (
+            '<IMPORTANT>\n'
+            '- If solving the issue seems difficult, you can ask for help using the help function.\n'
+            '- You can ask for help AFTER trying to solve the issue yourself.\n'
+            '- If the issue seems solved, try to think about consistency with other parts of the codebase.\n'
+            '</IMPORTANT>\n'
+        )
+        # messages.append(
+        #    Message(
+        #        role='user', content=[TextContent(text=reminder_text)]
+        #    )
+        # )
         return messages

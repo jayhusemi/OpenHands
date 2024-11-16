@@ -13,7 +13,6 @@ from litellm import (
 )
 
 from openhands.core.logger import openhands_logger as logger
-from openhands.core.message import Message
 from openhands.events.action import (
     Action,
     AgentDelegateAction,
@@ -430,13 +429,27 @@ BrowserTool = ChatCompletionToolParam(
     ),
 )
 
-_FINISH_DESCRIPTION = """Finish the interaction when the task is complete OR if the assistant cannot proceed further with the task."""
+_FINISH_DESCRIPTION = (
+    """Finish the interaction when the task is successfully complete."""
+)
 
 FinishTool = ChatCompletionToolParam(
     type='function',
     function=ChatCompletionToolParamFunctionChunk(
         name='finish',
         description=_FINISH_DESCRIPTION,
+    ),
+)
+
+_HELP_DESCRIPTION = (
+    """Request assistance when the assistant cannot proceed further with the task."""
+)
+
+HelpTool = ChatCompletionToolParam(
+    type='function',
+    function=ChatCompletionToolParamFunctionChunk(
+        name='help',
+        description=_HELP_DESCRIPTION,
     ),
 )
 
@@ -449,11 +462,7 @@ def combine_thought(action: Action, thought: str) -> Action:
     return action
 
 
-def response_to_actions(
-    response: ModelResponse, messages: list[Message] | None = None
-) -> list[Action]:
-    if messages is None:
-        messages = []
+def response_to_actions(response: ModelResponse) -> list[Action]:
     actions: list[Action] = []
     assert len(response.choices) == 1, 'Only one choice is supported for now'
     assistant_msg = response.choices[0].message
@@ -486,9 +495,9 @@ def response_to_actions(
                     inputs=arguments,
                 )
             elif tool_call.function.name == 'finish':
-                action = AgentFinishAction(
-                    outputs={'fixed': True, 'trayectory': messages}
-                )
+                action = AgentFinishAction(outputs={'fixed': True})
+            elif tool_call.function.name == 'help':
+                action = AgentFinishAction(outputs={'fixed': False})
             elif tool_call.function.name == 'edit_file':
                 action = FileEditAction(**arguments)
             elif tool_call.function.name == 'str_replace_editor':
@@ -529,7 +538,7 @@ def get_tools(
     codeact_enable_llm_editor: bool = False,
     codeact_enable_jupyter: bool = False,
 ) -> list[ChatCompletionToolParam]:
-    tools = [CmdRunTool, FinishTool]
+    tools = [CmdRunTool, FinishTool, HelpTool]
     if codeact_enable_browsing:
         tools.append(BrowserTool)
     if codeact_enable_jupyter:

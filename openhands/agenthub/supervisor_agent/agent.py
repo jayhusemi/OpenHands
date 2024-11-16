@@ -1,8 +1,9 @@
+import json
 import logging
 import re
 from typing import Any, Dict, List
 
-from openhands.agenthub.supervisor_agent.prompt import code_act_agent_prompt, get_prompt
+from openhands.agenthub.supervisor_agent.prompt import get_prompt
 from openhands.controller.agent import Agent
 from openhands.controller.state.state import State
 from openhands.core.config import AgentConfig
@@ -34,6 +35,7 @@ class SupervisorAgent(Agent):
     test_command: str = ''
     time_to_stop: int = 60  # Every 60 iterations, we stop and evaluate the approach
     phase: int = 0
+    steps: str = ''
 
     sandbox_plugins: list[PluginRequirement] = [
         # NOTE: AgentSkillsRequirement need to go before JupyterRequirement, since
@@ -81,28 +83,50 @@ class SupervisorAgent(Agent):
 
         if self.phase == 0:
             self.phase += 1
-            prompt = get_prompt(self.task, None, 'high_level_task')
+            prompt = get_prompt(self.task, prompt_type='high_level_task')
+            raw_response = self.get_response(prompt)
+            match = re.search(
+                r'<steps>(.*?)</steps>',
+                raw_response,
+                re.DOTALL,
+            )
+            self.steps = match.group(1).strip('"') if match else self.task
             return AgentDelegateAction(
                 agent='CodeActAgent',
                 inputs={
-                    'task': prompt,
-                    'when_to_stop': 1,
+                    'task': self.task,
+                    'plan': self.steps,
+                    'when_to_stop': self.time_to_stop,
                 },
             )
 
         if not isinstance(last_observation, AgentDelegateObservation):
             return AgentFinishAction()
 
-        if not last_observation.outputs.get('fixed', False):
-            response: str = last_observation.outputs['response']
-            match = re.search(
-                r'<requirements>(.*?)</requirements>', str(response), re.DOTALL
-            )
-            self.requirements = match.group(1).strip('"') if match else ''
-
-            self.phase += 1
+        if not last_observation.outputs.get('fixed', True):
+            trajectory_str: str = last_observation.outputs['trayectory']
+            trajectory_data = json.loads(trajectory_str)
+            deserialized_trajectory = [
+                Message(
+                    role=msg_dict.get('role'),
+                    content=[
+                        TextContent(text=content_text)
+                        for content_text in [
+                            msg_dict['content'][0]['text']
+                            if isinstance(msg_dict['content'], list)
+                            else msg_dict['content']
+                        ]
+                    ],
+                    tool_call_id=msg_dict.get('tool_call_id'),
+                    name=msg_dict.get('name'),
+                )
+                for msg_dict in trajectory_data
+            ]
             prompt = get_prompt(
-                self.task, None, 'initial', requirements=self.requirements
+                self.task,
+                'right_track',
+                trajectory=deserialized_trajectory,
+                plan=self.steps,
             )
             raw_response = self.get_response(prompt)
             match = re.search(
@@ -110,13 +134,13 @@ class SupervisorAgent(Agent):
                 raw_response,
                 re.DOTALL,
             )
-            steps = match.group(1).strip('"') if match else self.task
+            self.steps = match.group(1).strip('"') if match else self.task
 
             return AgentDelegateAction(
                 agent='CodeActAgent',
                 inputs={
                     'task': self.task,
-                    'next_step': code_act_agent_prompt % {'steps': steps},
+                    'plan': self.steps,
                     'when_to_stop': self.time_to_stop,
                 },
             )

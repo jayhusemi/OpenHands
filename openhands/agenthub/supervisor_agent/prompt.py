@@ -10,90 +10,39 @@ HISTORY_SIZE = 20
 # 2. Implementing the solution.
 # Then the manager needs to check if the issue has been fixed, if not, it needs to iterate.
 general_description = """
-You are a helpful assistant that provides a detailed step-by-step plan.
-"""
-side_effects_description = """
-You are a helpful assistant that creative insights into the side-effects of changes made.
-
-%(approach)s
-
-Imagine that the changes described in <pr_description> have been implemented.
-Now this feature is being used. During the usage of this feature, what are the parts of the codebase that could be affected?
-Your thinking should be thorough and so it's fine if it's very long.
-ALWAYS output all your reasoning, be as detailed as possible.
-
-<IMPORTANT>
-- Documentation has been taken into account, so you should not mention it in any way!
-- Testing has been taken into account, so you should not mention it in any way!
-- Be aware of consistency issues!
-- Provide ONLY the related functions. (e.g. If the <pr_description> mentions the write function, then generate the read function).
-- Encapsulate your suggestions in between <suggestions> and </suggestions> tags.
-</IMPORTANT>
-
-EXAMPLE:
-<pr_description>
-The changes require to change how the data is stored.
-</pr_description>
-After implementing those changes:
-- The parser functions that read the data might need to be updated to adapt to the new format.
-
-END OF EXAMPLE
+You are a helpful assistant that provides a DETAILED step-by-step plan.
 """
 
 high_level_task = """
 
 %(task)s
 
-Can you create a summary with all the functional and non-functional requirements for the task described in <pr_description>?
+Can you create a step-by-step plan on how to fix the issue described in <pr_description>?
+Feel free to generate as many steps as necessary to fix the issue described in <pr_description>.
 
-<IMPORTANT>
-- Encapsulate your suggestions in between <requirements> and </requirements> tags.
-- Documentation has been taken into account, so you should not mention it in any way!
-- Testing has been taken into account, so you should not mention it in any way!
-- Do NOT consider performance implications
-</IMPORTANT>
-"""
-
-initial_prompt = """
-I am trying to fix the following issue:
-
-%(task)s
-
-I have already thought out the functional and non-functional requirements for the task described in <pr_description>:
-
-<requirements>
-%(requirements)s
-</requirements>
-
-create a step-by-step plan broken down into phases for how to implement this using requirements mentioned in <requirements>.
-
+Make the plan in a way that the changes are minimal and only affect non-tests files in the /workspace directory.
 Your thinking should be thorough and so it's fine if it's very long.
+Generate bullet points, highlevel steps. This means do NOT generate code snippets.
 
-Documentation has been taken into account, so you should not repeat it in the <steps>.
-I've already taken care of all changes to any of the test files described in the <pr_description>. This means you DON'T have to modify the testing logic or any of the tests in any way!
+EXAMPLE:
+
+<steps>
+- 1. As a first step, it might be a good idea to explore the repo to familiarize yourself with its structure.
+- 2. Create a script to reproduce the error and execute it with `python <filename.py>` using the BashTool, to confirm the error
+- 3. Edit the sourcecode of the repo to resolve the issue
+- 4. Rerun your reproduce script and confirm that the error is fixed!
+- 5. Think about edgecases and make sure your fix handles them as well
+</steps>
+
+END OF EXAMPLE
 
 <IMPORTANT>
 - Encapsulate your suggestions in between <steps> and </steps> tags.
-- One step MUST be about reproducing the issue with a simple script, no pytest!
-- The goal is to fix the issue with the MINIMAL changes to non-tests files in the /workspace directory.
-</IMPORTANT>
-
-REMEMBER: the idea is to fix the issue with the MINIMAL changes to non-tests files in the /workspace directory.
-"""
-
-code_act_agent_prompt = """
-
-Can you help me implement the necessary changes to the repository so that the requirements specified in the <pr_description> are met?
-I've already taken care of all changes to any of the test files described in the <pr_description>. This means you DON'T have to modify the testing logic or any of the tests in any way!
-Your task is to make the minimal changes to non-tests files in the /workspace directory to ensure the <pr_description> is satisfied.
-Follow the steps described in <steps> to resolve the issue:
-
-<steps>
-%(steps)s
-</steps>
-
-<IMPORTANT>
-- When reproducing the issue, use a simple Python script and directly examine its output instead of pytest.
+- Documentation has been taken into account, so you should not mention it in any way!
+- Testing has been taken into account, so you should not mention it in any way!
+- Generate ONLY high-level steps.
+- One of those steps must be to create a script to reproduce the error and execute it with `python <filename.py>` using the BashTool, to confirm the error
+- Be CONCISE.
 </IMPORTANT>
 
 Your turn!
@@ -101,21 +50,51 @@ Your turn!
 
 right_track_prompt = """
 
-I am trying to fix the issue described in the <pr_description> following the steps described in the <pr_description>
-I keep track of everything I did in the <pr_approach>
+I am trying to fix the issue described in the <pr_description>.
+I kept track of everything I did in the <pr_approach>
 
 <pr_approach>
 %(approach)s
 </pr_approach>
 
-Take a step back and reconsider everything I have done in the <pr_approach>.
-Your thinking should be thorough and so it's fine if it's very long.
-Can you help me identify if I am on the right track?
+As a reminder, this is the <pr_description>:
+
+%(task)s
+
+The plan I followed in my <pr_approach> is described in the <plan> tag:
+
+<plan>
+%(plan)s
+</plan>
+
+Can you suggest me a new plan to fix the issue described in the <pr_description>?
+Pay attention at the errors I faced in the <pr_approach>. Extract information from the errors to shape a new plan.
+One of initial steps would be to see if the issue is still present, if it is not, then it should expand on the edgecases.
+
+EXAMPLE:
+
+<steps>
+- 1. As a first step, it might be a good idea to explore the repo to familiarize yourself with its structure.
+- 2. Create a script to reproduce the error and execute it with `python <filename.py>` using the BashTool, to confirm the error
+- 3. Edit the sourcecode of the repo to resolve the issue
+- 4. Rerun your reproduce script and confirm that the error is fixed!
+- 5. Think about edgecases and make sure your fix handles them as well
+</steps>
+
+END OF EXAMPLE
 
 <IMPORTANT>
-- If there are many code changes, I am probably not on the right track.
-- Only reply with yes or no enclosed in between <answer> and </answer> tags
+- Encapsulate your suggestions in between <steps> and </steps> tags.
+- Documentation has been taken into account, so you should not mention it in any way!
+- Testing has been taken into account, so you should not mention it in any way!
+- Generate ONLY high-level steps.
+- The second step must be to create a script to reproduce the error and execute it with `python <filename.py>` using the BashTool, to confirm the error
+- The goal is to fix the issue described in <pr_description> with the MINIMAL changes to non-tests files in the /workspace directory.
+- Be CONCISE.
+- Be CREATIVE, your plan MUST be DIFFERENT from the one described in <plan>.
 </IMPORTANT>
+
+Your turn!
 """
 
 refactor_prompt = """
@@ -188,9 +167,9 @@ def format_conversation(trajectory: Optional[list[Message]] = None) -> str:
 
 def get_prompt(
     task: str,
-    trajectory: Optional[list[Message]] = None,
     prompt_type: str = 'initial',
-    augmented_task: str = '',
+    trajectory: Optional[list[Message]] = None,
+    plan: str = '',
     requirements: str = '',
 ) -> str:
     """Format and return the appropriate prompt based on prompt_type.
@@ -199,7 +178,7 @@ def get_prompt(
         task: The task description
         trajectory: List of Message objects containing conversation history
         prompt_type: Type of prompt to return ("initial" or "refactor")
-        augmented_task: The augmented task description
+        plan: The augmented task description
     Returns:
         Formatted prompt string
     """
@@ -210,7 +189,6 @@ def get_prompt(
 
     # Select the appropriate prompt template
     template = {
-        'initial': initial_prompt,
         'right_track': right_track_prompt,
         'refactor': refactor_prompt,
         'critical': critical_prompt,
@@ -220,6 +198,6 @@ def get_prompt(
     return general_description + template % {
         'task': task,
         'approach': approach,
-        'augmented_pr_description': augmented_task,
+        'plan': plan,
         'requirements': requirements,
     }
