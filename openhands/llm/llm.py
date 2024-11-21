@@ -50,15 +50,6 @@ LLM_RETRY_EXCEPTIONS: tuple[type[Exception], ...] = (
     ServiceUnavailableError,
 )
 
-# cache prompt supporting models
-# remove this when we gemini and deepseek are supported
-CACHE_PROMPT_SUPPORTED_MODELS = [
-    'claude-3-5-sonnet-20241022',
-    'claude-3-5-sonnet-20240620',
-    'claude-3-5-haiku-20241022',
-    'claude-3-haiku-20240307',
-    'claude-3-opus-20240229',
-]
 
 # function calling supporting models
 FUNCTION_CALLING_SUPPORTED_MODELS = [
@@ -68,6 +59,10 @@ FUNCTION_CALLING_SUPPORTED_MODELS = [
     'claude-3-5-haiku-20241022',
     'gpt-4o-mini',
     'gpt-4o',
+]
+
+SINGLE_CHECKPOINT_MODELS = [
+    'gemini',  # Gemini only supports one checkpoint for prompt caching
 ]
 
 
@@ -121,13 +116,6 @@ class LLM(RetryMixin, DebugMixin):
             top_p=self.config.top_p,
             drop_params=self.config.drop_params,
         )
-
-        if self.vision_is_active():
-            logger.debug('LLM: model has vision enabled')
-        if self.is_caching_prompt_active():
-            logger.debug('LLM: caching prompt enabled')
-        if self.is_function_calling_active():
-            logger.debug('LLM: model supports function calling')
 
         self._completion = partial(
             litellm_completion,
@@ -402,11 +390,8 @@ class LLM(RetryMixin, DebugMixin):
         """
         return (
             self.config.caching_prompt is True
-            and (
-                self.config.model in CACHE_PROMPT_SUPPORTED_MODELS
-                or self.config.model.split('/')[-1] in CACHE_PROMPT_SUPPORTED_MODELS
-            )
-            # We don't need to look-up model_info, because only Anthropic models needs the explicit caching breakpoint
+            and self.model_info is not None
+            and self.model_info.get('supports_prompt_caching', False)
         )
 
     def is_function_calling_active(self) -> bool:
@@ -569,3 +554,13 @@ class LLM(RetryMixin, DebugMixin):
 
         # let pydantic handle the serialization
         return [message.model_dump() for message in messages]
+
+    def is_single_checkpoint_model(self) -> bool:
+        """Check if model only supports a single prompt cache checkpoint.
+
+        Returns:
+            bool: True if model only supports one checkpoint (e.g. Gemini)
+        """
+        return any(
+            model in self.config.model.lower() for model in SINGLE_CHECKPOINT_MODELS
+        )
