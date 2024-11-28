@@ -19,10 +19,11 @@ Launch docker client failed. Please make sure you have installed docker and star
 ```
 
 **Resolution**
-1. Confirm `docker` is running on your system. You should be able to run `docker ps` in the terminal successfully.
-2. If using Docker Desktop, ensure `Settings > Advanced > Allow the default Docker socket to be used` is enabled.
-3. Depending on your configuration you may need `Settings > Resources > Network > Enable host networking` enabled in Docker Desktop.
-4. Try reinstalling Docker Desktop.
+Try these in order:
+* Confirm `docker` is running on your system. You should be able to run `docker ps` in the terminal successfully.
+* If using Docker Desktop, ensure `Settings > Advanced > Allow the default Docker socket to be used` is enabled.
+* Depending on your configuration you may need `Settings > Resources > Network > Enable host networking` enabled in Docker Desktop.
+* Reinstall Docker Desktop.
 
 ### Sessions are not restored
 
