@@ -444,6 +444,66 @@ BrowserTool = ChatCompletionToolParam(
     ),
 )
 
+_GUI_USE_TOOL_DESCRIPTION = """Use a mouse and keyboard to interact with a computer, and take screenshots.
+* This is an interface to a desktop GUI. You do not have access to a terminal or applications menu. You must click on desktop icons to start applications.
+* Some applications may take time to start or process actions, so you may need to wait and take successive screenshots to see the results of your actions. E.g. if you click on Firefox and a window doesn't open, try taking another screenshot.
+* The screen's resolution is {{ display_width_px }}x{{ display_height_px }}.
+* The display number is {{ display_number }}
+* Whenever you intend to move the cursor to click on an element like an icon, you should consult a screenshot to determine the coordinates of the element before moving the cursor.
+* If you tried clicking on a program or link but it failed to load, even after waiting, try adjusting your cursor position so that the tip of the cursor visually falls on the element that you want to click.
+* Make sure to click any buttons, links, icons, etc with the cursor tip in the center of the element. Don't click boxes on their edges unless asked.
+"""
+
+GUIUseTool = ChatCompletionToolParam(
+    type='function',
+    function=ChatCompletionToolParamFunctionChunk(
+        name='gui_use',
+        description=_GUI_USE_TOOL_DESCRIPTION,
+        parameters={
+            'type': 'object',
+            'properties': {
+                'action': {
+                    'description': """The action to perform. The available actions are:
+* `key`: Press a key or key-combination on the keyboard.
+  - This supports xdotool's `key` syntax.
+  - Examples: "a", "Return", "alt+Tab", "ctrl+s", "Up", "KP_0" (for the numpad 0 key).
+* `type`: Type a string of text on the keyboard.
+* `cursor_position`: Get the current (x, y) pixel coordinate of the cursor on the screen.
+* `mouse_move`: Move the cursor to a specified (x, y) pixel coordinate on the screen.
+* `left_click`: Click the left mouse button.
+* `left_click_drag`: Click and drag the cursor to a specified (x, y) pixel coordinate on the screen.
+* `right_click`: Click the right mouse button.
+* `middle_click`: Click the middle mouse button.
+* `double_click`: Double-click the left mouse button.
+* `screenshot`: Take a screenshot of the screen.""",
+                    'enum': [
+                        'key',
+                        'type',
+                        'mouse_move',
+                        'left_click',
+                        'left_click_drag',
+                        'right_click',
+                        'middle_click',
+                        'double_click',
+                        'screenshot',
+                        'cursor_position',
+                    ],
+                    'type': 'string',
+                },
+                'coordinate': {
+                    'description': '(x, y): The x (pixels from the left edge) and y (pixels from the top edge) coordinates to move the mouse to. Required only by `action=mouse_move` and `action=left_click_drag`.',
+                    'type': 'array',
+                },
+                'text': {
+                    'description': 'Required only by `action=type` and `action=key`.',
+                    'type': 'string',
+                },
+            },
+            'required': ['action'],
+        },
+    ),
+)
+
 _FINISH_DESCRIPTION = """Finish the interaction when the task is complete OR if the assistant cannot proceed further with the task."""
 
 FinishTool = ChatCompletionToolParam(
@@ -511,6 +571,11 @@ def response_to_actions(response: ModelResponse) -> list[Action]:
                 action = BrowseInteractiveAction(browser_actions=arguments['code'])
             elif tool_call.function.name == 'web_read':
                 action = BrowseURLAction(url=arguments['url'])
+            elif tool_call.function.name == 'gui_use':
+                browser_action = 'gui_use'
+                action = BrowseInteractiveAction(
+                    browser_actions=browser_action, extra_args=arguments
+                )
             else:
                 raise FunctionCallNotExistsError(
                     f'Tool {tool_call.function.name} is not registered. (arguments: {arguments}). Please check the tool name and retry with an existing tool.'
@@ -544,7 +609,8 @@ def get_tools(
     tools = [CmdRunTool, FinishTool]
     if codeact_enable_browsing:
         tools.append(WebReadTool)
-        tools.append(BrowserTool)
+        # tools.append(BrowserTool)
+        tools.append(GUIUseTool)
     if codeact_enable_jupyter:
         tools.append(IPythonTool)
     if codeact_enable_llm_editor:

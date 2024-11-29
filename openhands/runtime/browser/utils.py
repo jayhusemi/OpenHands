@@ -5,10 +5,15 @@ from openhands.core.schema import ActionType
 from openhands.events.action import BrowseInteractiveAction, BrowseURLAction
 from openhands.events.observation import BrowserOutputObservation
 from openhands.runtime.browser.browser_env import BrowserEnv
+from openhands.runtime.browser.transformer import (
+    translate_computer_use_action_to_browsergym_action,
+)
 
 
 async def browse(
-    action: BrowseURLAction | BrowseInteractiveAction, browser: BrowserEnv | None
+    action: BrowseURLAction | BrowseInteractiveAction,
+    browser: BrowserEnv | None,
+    last_obs: BrowserOutputObservation | None,
 ) -> BrowserOutputObservation:
     if browser is None:
         raise BrowserUnavailableException()
@@ -21,9 +26,26 @@ async def browse(
         action_str = f'goto("{asked_url}")'
 
     elif isinstance(action, BrowseInteractiveAction):
-        # new BrowseInteractiveAction, supports full featured BrowserGym actions
-        # action in BrowserGym: see https://github.com/ServiceNow/BrowserGym/blob/main/core/src/browsergym/core/action/functions.py
-        action_str = action.browser_actions
+        _action_str = action.browser_actions
+
+        if _action_str == 'gui_use':
+            # received action_str defined by Anthropic's Computer Use feature: see https://docs.anthropic.com/en/docs/build-with-claude/computer-use#computer-tool
+            extra_args = action.extra_args
+
+            # TODO: perform argument validation on extra_args
+            assert extra_args is not None
+
+            # construct a computer use action
+            _action_str = f'{extra_args["action"]}({", ".join([f"{k}={v}" for k, v in extra_args.items() if k != "action"])})'
+
+            # translate to BrowserGym actions
+            # action in BrowserGym: see https://github.com/ServiceNow/BrowserGym/blob/main/core/src/browsergym/core/action/functions.py
+            action_str = translate_computer_use_action_to_browsergym_action(
+                _action_str, last_obs
+            )
+        else:
+            # received normal BrowserGym action
+            action_str = _action_str
     else:
         raise ValueError(f'Invalid action type: {action.action}')
 
@@ -50,6 +72,7 @@ async def browse(
             last_browser_action_error=obs.get('last_action_error', ''),
             error=True if obs.get('last_action_error', '') else False,  # error flag
             trigger_by_action=action.action,
+            mouse_position=obs.get('mouse_position', []),  # mouse position
         )
     except Exception as e:
         return BrowserOutputObservation(
