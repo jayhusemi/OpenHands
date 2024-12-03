@@ -12,12 +12,10 @@ from runloop_api_client.types.shared_params import LaunchParameters
 from openhands.core.config import AppConfig
 from openhands.core.logger import openhands_logger as logger
 from openhands.events import EventStream
-from openhands.runtime.impl.eventstream.eventstream_runtime import (
-    EventStreamRuntime,
-    LogBuffer,
-)
+from openhands.runtime.impl.docker.docker_runtime import DockerRuntime
 from openhands.runtime.plugins import PluginRequirement
 from openhands.runtime.utils.command import get_remote_startup_command
+from openhands.runtime.utils.log_buffer import LogBuffer
 from openhands.runtime.utils.request import send_request
 from openhands.utils.tenacity_stop import stop_if_should_exit
 
@@ -95,8 +93,8 @@ class RunloopLogBuffer(LogBuffer):
         self.log_stream_thread.join(timeout)
 
 
-class RunloopRuntime(EventStreamRuntime):
-    """The RunloopRuntime class is an EventStreamRuntime that utilizes Runloop Devbox as a runtime environment."""
+class RunloopRuntime(DockerRuntime):
+    """The RunloopRuntime class is a DockerRuntime that utilizes Runloop Devbox as a runtime environment."""
 
     _sandbox_port: int = 4444
     _vscode_port: int = 4445
@@ -229,7 +227,7 @@ class RunloopRuntime(EventStreamRuntime):
         logger.info(f'Container started. Server url: {self.api_url}')
 
         # End Runloop connect
-        # NOTE: Copied from EventStreamRuntime
+        # NOTE: Copied from DockerRuntime
         logger.info('Waiting for client to become ready...')
         self.send_status_message('STATUS$WAITING_FOR_CLIENT')
         self._wait_until_alive()

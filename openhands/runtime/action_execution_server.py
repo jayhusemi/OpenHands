@@ -538,6 +538,7 @@ if __name__ == '__main__':
     async def alive():
         return {'status': 'ok'}
 
+    @app.post('/execute_action')
     # ================================
     # VSCode-specific operations
     # ================================

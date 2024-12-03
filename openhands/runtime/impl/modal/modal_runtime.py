@@ -10,12 +10,10 @@ import tenacity
 
 from openhands.core.config import AppConfig
 from openhands.events import EventStream
-from openhands.runtime.impl.eventstream.eventstream_runtime import (
-    EventStreamRuntime,
-    LogBuffer,
-)
+from openhands.runtime.impl.docker.docker_runtime import DockerRuntime
 from openhands.runtime.plugins import PluginRequirement
 from openhands.runtime.utils.command import get_remote_startup_command
+from openhands.runtime.utils.log_buffer import LogBuffer
 from openhands.runtime.utils.runtime_build import (
     BuildFromImageType,
     prep_build_folder,
@@ -52,7 +50,7 @@ class ModalLogBuffer(LogBuffer):
         self.log_stream_thread.start()
 
 
-class ModalRuntime(EventStreamRuntime):
+class ModalRuntime(DockerRuntime):
     """This runtime will subscribe the event stream.
 
     When receive an event, it will send the event to runtime-client which run inside the Modal sandbox environment.
