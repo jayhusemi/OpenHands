@@ -231,8 +231,8 @@ class Runtime(FileEditRuntimeMixin):
         dir_name = str(custom_microagents_dir)
         if selected_repository:
             dir_name = str(
-                 Path(selected_repository.split('/')[1]) / custom_microagents_dir
-             )
+                Path(selected_repository.split('/')[1]) / custom_microagents_dir
+            )
         oh_instructions_header = '---\nname: openhands_instructions\nagent: CodeActAgent\ntriggers:\n- ""\n---\n'
         obs = self.read(FileReadAction(path='.openhands_instructions'))
         if isinstance(obs, ErrorObservation):
