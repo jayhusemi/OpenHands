@@ -68,6 +68,7 @@ class AgentController:
     delegate: 'AgentController | None' = None
     _pending_action: Action | None = None
     _closed: bool = False
+    fake_user_response_fn: Callable[[str], str] | None = None
     filter_out: ClassVar[tuple[type[Event], ...]] = (
         NullAction,
         NullObservation,
@@ -89,6 +90,7 @@ class AgentController:
         is_delegate: bool = False,
         headless_mode: bool = True,
         status_callback: Callable | None = None,
+        fake_user_response_fn: Callable[[str], str] | None = None,
     ):
         """Initializes a new instance of the AgentController class.
 
@@ -106,12 +108,20 @@ class AgentController:
             initial_state: The initial state of the controller.
             is_delegate: Whether this controller is a delegate.
             headless_mode: Whether the agent is run in headless mode.
+            fake_user_response_fn: Function to generate fake user responses in headless mode.
+                If not provided and headless_mode is True, a default function will be used.
             status_callback: Optional callback function to handle status updates.
         """
         self._step_lock = asyncio.Lock()
         self.id = sid
         self.agent = agent
         self.headless_mode = headless_mode
+
+        # Set up default fake user response function for headless mode
+        if headless_mode and fake_user_response_fn is None:
+            self.fake_user_response_fn = lambda _: 'continue'
+        else:
+            self.fake_user_response_fn = fake_user_response_fn
 
         # subscribe to the event stream
         self.event_stream = event_stream
@@ -315,7 +325,22 @@ class AgentController:
             if self.get_agent_state() != AgentState.RUNNING:
                 await self.set_agent_state_to(AgentState.RUNNING)
         elif action.source == EventSource.AGENT and action.wait_for_response:
-            await self.set_agent_state_to(AgentState.AWAITING_USER_INPUT)
+            if self.headless_mode:
+                # In headless mode, we should use a fake user response if provided
+                if self.fake_user_response_fn is not None:
+                    response = self.fake_user_response_fn(action.content)
+                    self.event_stream.add_event(
+                        MessageAction(content=response),
+                        EventSource.USER,
+                    )
+                else:
+                    # If no fake response function is provided, we continue with an empty response
+                    self.event_stream.add_event(
+                        MessageAction(content=''),
+                        EventSource.USER,
+                    )
+            else:
+                await self.set_agent_state_to(AgentState.AWAITING_USER_INPUT)
 
     def reset_task(self) -> None:
         """Resets the agent's task."""
