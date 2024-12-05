@@ -72,7 +72,7 @@ class Session:
         self.config.security.confirmation_mode = args.get(
             ConfigType.CONFIRMATION_MODE, self.config.security.confirmation_mode
         )
-        self.config.security.security_analyzer = data.get('args', {}).get(
+        self.config.security.security_analyzer = args.get(
             ConfigType.SECURITY_ANALYZER, self.config.security.security_analyzer
         )
         max_iterations = args.get(ConfigType.MAX_ITERATIONS, self.config.max_iterations)
@@ -103,6 +103,8 @@ class Session:
                 max_budget_per_task=self.config.max_budget_per_task,
                 agent_to_llm_config=self.config.get_agent_to_llm_config_map(),
                 agent_configs=self.config.get_agent_configs(),
+                github_token=data.pop('github_token', None),
+                selected_repository=data.get('selected_repository', None),
             )
         except Exception as e:
             logger.exception(f'Error creating controller: {e}')
