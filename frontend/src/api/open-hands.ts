@@ -8,6 +8,7 @@ import {
   GetConfigResponse,
   GetVSCodeUrlResponse,
   AuthenticateResponse,
+  UserProject,
 } from "./open-hands.types";
 import { openHands } from "./open-hands-axios";
 
@@ -177,6 +178,27 @@ class OpenHands {
     const { data } = await openHands.get<{ runtime_id: string }>(
       "/api/conversation",
     );
+    return data;
+  }
+
+  static async getUserProjects(): Promise<UserProject[]> {
+    const { data } = await openHands.get<UserProject[]>("/api/projects");
+    return data;
+  }
+
+  static async deleteUserProject(projectId: string): Promise<void> {
+    await openHands.delete(`/api/projects/${projectId}`);
+  }
+
+  static async updateUserProject(
+    projectId: string,
+    project: Partial<Omit<UserProject, "id">>,
+  ): Promise<void> {
+    await openHands.put(`/api/projects/${projectId}`, project);
+  }
+
+  static async createConversation(): Promise<UserProject> {
+    const { data } = await openHands.post<UserProject>("/api/projects");
     return data;
   }
 }

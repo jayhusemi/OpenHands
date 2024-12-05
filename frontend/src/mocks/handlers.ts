@@ -1,4 +1,35 @@
 import { delay, http, HttpResponse } from "msw";
+import { UserProject } from "#/api/open-hands.types";
+
+const projects: UserProject[] = [
+  {
+    id: "1",
+    name: "My New Project",
+    repo: null,
+    lastUpdated: new Date().toISOString(),
+    state: "running",
+  },
+  {
+    id: "2",
+    name: "Repo Testing",
+    repo: "octocat/hello-world",
+    // 2 days ago
+    lastUpdated: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(),
+    state: "cold",
+  },
+  {
+    id: "3",
+    name: "Another Project",
+    repo: "octocat/earth",
+    // 5 days ago
+    lastUpdated: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString(),
+    state: "finished",
+  },
+];
+
+const PROJECTS = new Map<string, UserProject>(
+  projects.map((project) => [project.id, project]),
+);
 
 const openHandsHandlers = [
   http.get("/api/options/models", async () => {
@@ -29,7 +60,17 @@ const openHandsHandlers = [
       .trim();
 
     if (!token) return HttpResponse.json([], { status: 401 });
-    return HttpResponse.json(["file1.ts", "dir1/file2.ts", "file3.ts"]);
+
+    let data = ["file1.txt", "file2.txt", "file3.txt"];
+    if (token === "3") {
+      data = [
+        "reboot_skynet.exe",
+        "target_list.txt",
+        "terminator_blueprint.txt",
+      ];
+    }
+
+    return HttpResponse.json(data);
   }),
 
   http.post("http://localhost:3001/api/save-file", () =>
@@ -104,4 +145,50 @@ export const handlers = [
     HttpResponse.json(null, { status: 200 }),
   ),
   http.get("/config.json", () => HttpResponse.json({ APP_MODE: "oss" })),
+
+  http.get("/api/projects", async () =>
+    HttpResponse.json(Array.from(PROJECTS.values())),
+  ),
+
+  http.delete("/api/projects/:projectId", async ({ params }) => {
+    const { projectId } = params;
+
+    if (typeof projectId === "string") {
+      PROJECTS.delete(projectId);
+      return HttpResponse.json(null, { status: 200 });
+    }
+
+    return HttpResponse.json(null, { status: 404 });
+  }),
+
+  http.put("/api/projects/:projectId", async ({ params, request }) => {
+    const { projectId } = params;
+
+    if (typeof projectId === "string") {
+      const project = PROJECTS.get(projectId);
+
+      if (project) {
+        const body = await request.json();
+        if (typeof body === "object" && body?.name) {
+          PROJECTS.set(projectId, { ...project, name: body.name });
+          return HttpResponse.json(null, { status: 200 });
+        }
+      }
+    }
+
+    return HttpResponse.json(null, { status: 404 });
+  }),
+
+  http.post("/api/projects", () => {
+    const conversation: UserProject = {
+      id: (Math.random() * 100).toString(),
+      name: "New Conversation",
+      repo: null,
+      lastUpdated: new Date().toISOString(),
+      state: "warm",
+    };
+
+    PROJECTS.set(conversation.id, conversation);
+    return HttpResponse.json(conversation, { status: 201 });
+  }),
 ];

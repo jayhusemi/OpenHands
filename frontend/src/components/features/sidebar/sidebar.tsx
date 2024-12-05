@@ -1,5 +1,6 @@
 import React from "react";
 import { useLocation } from "react-router";
+import { FaBars } from "react-icons/fa";
 import { useAuth } from "#/context/auth-context";
 import { useUserPrefs } from "#/context/user-prefs-context";
 import { useGitHubUser } from "#/hooks/query/use-github-user";
@@ -13,6 +14,7 @@ import { LoadingSpinner } from "#/components/shared/loading-spinner";
 import { AccountSettingsModal } from "#/components/shared/modals/account-settings/account-settings-modal";
 import { ExitProjectConfirmationModal } from "#/components/shared/modals/exit-project-confirmation-modal";
 import { SettingsModal } from "#/components/shared/modals/settings/settings-modal";
+import { ProjectPanel } from "../project-panel/project-panel";
 
 export function Sidebar() {
   const location = useLocation();
@@ -28,6 +30,7 @@ export function Sidebar() {
   const [settingsModalIsOpen, setSettingsModalIsOpen] = React.useState(false);
   const [startNewProjectModalIsOpen, setStartNewProjectModalIsOpen] =
     React.useState(false);
+  const [projectPanelIsOpen, setProjectPanelIsOpen] = React.useState(false);
 
   React.useEffect(() => {
     // If the github token is invalid, open the account settings modal again
@@ -45,7 +48,7 @@ export function Sidebar() {
   };
 
   const handleClickLogo = () => {
-    if (location.pathname.startsWith("/app"))
+    if (location.pathname.startsWith("/conversation"))
       setStartNewProjectModalIsOpen(true);
   };
 
@@ -54,7 +57,7 @@ export function Sidebar() {
 
   return (
     <>
-      <aside className="px-1 flex flex-col gap-1">
+      <aside className="px-1 flex flex-col gap-1 relative">
         <div className="w-[34px] h-[34px] flex items-center justify-center">
           {user.isLoading && <LoadingSpinner size="small" />}
           {!user.isLoading && <AllHandsLogoButton onClick={handleClickLogo} />}
@@ -67,6 +70,13 @@ export function Sidebar() {
             onClickAccountSettings={() => setAccountSettingsModalOpen(true)}
           />
           <SettingsButton onClick={() => setSettingsModalIsOpen(true)} />
+          <button
+            data-testid="toggle-project-panel"
+            type="button"
+            onClick={() => setProjectPanelIsOpen((prev) => !prev)}
+          >
+            <FaBars fill="#A3A3A3" className="hover:opacity-80" />
+          </button>
           <DocsButton />
           {!!token && (
             <ExitProjectButton
@@ -74,7 +84,16 @@ export function Sidebar() {
             />
           )}
         </nav>
+
+        {projectPanelIsOpen && (
+          <div
+            className="absolute h-full left-[calc(100%+12px)] z-20" // 12px padding (sidebar parent)
+          >
+            <ProjectPanel onClose={() => setProjectPanelIsOpen(false)} />
+          </div>
+        )}
       </aside>
+
       {accountSettingsModalOpen && (
         <AccountSettingsModal onClose={handleAccountSettingsModalClose} />
       )}
