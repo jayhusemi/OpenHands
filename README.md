@@ -63,9 +63,6 @@ run OpenHands in a scriptable [headless mode](https://docs.all-hands.dev/modules
 interact with it via a [friendly CLI](https://docs.all-hands.dev/modules/usage/how-to/cli-mode),
 or run it on tagged issues with [a github action](https://github.com/All-Hands-AI/OpenHands/blob/main/openhands/resolver/README.md).
 
-Follow the [Persisting Session Data](https://docs.all-hands.dev/modules/usage/how-to/persist-session-data) guide if you
-would like your session data to persist.
-
 Visit [Installation](https://docs.all-hands.dev/modules/usage/installation) for more information and setup instructions.
 
 If you want to modify the OpenHands source code, check out [Development.md](https://github.com/All-Hands-AI/OpenHands/blob/main/Development.md).
